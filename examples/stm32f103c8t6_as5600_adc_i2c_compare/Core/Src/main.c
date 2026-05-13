@@ -82,10 +82,11 @@ static HAL_StatusTypeDef Read_AdcRaw(uint16_t *adc_raw)
     return HAL_ERROR;
   }
 
-  if (HAL_ADC_PollForConversion(&hadc1, 10U) != HAL_OK)
+  HAL_StatusTypeDef ret = HAL_ADC_PollForConversion(&hadc1, 10U);
+  if (ret != HAL_OK)
   {
     (void)HAL_ADC_Stop(&hadc1);
-    return HAL_TIMEOUT;
+    return ret;
   }
 
   *adc_raw = (uint16_t)HAL_ADC_GetValue(&hadc1);
@@ -175,7 +176,7 @@ int main(void)
 
     if ((now - g_led_tick) >= 500U)
     {
-      HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+      HAL_GPIO_TogglePin(PC13_RUN_LED_GPIO_Port, PC13_RUN_LED_Pin);
       g_led_tick = now;
     }
 
@@ -186,6 +187,9 @@ int main(void)
       float adc_angle = 0.0f;
       float i2c_angle = 0.0f;
       float error = 0.0f;
+      int32_t adc_angle_x100 = 0;
+      int32_t i2c_angle_x100 = 0;
+      int32_t error_x100 = 0;
       HAL_StatusTypeDef adc_ret = Read_AdcRaw(&adc_raw);
       HAL_StatusTypeDef i2c_ret = AS5600_ReadRawAngle(&hi2c1, &i2c_raw);
 
@@ -205,8 +209,12 @@ int main(void)
         i2c_angle = AS5600_RawToDegree(i2c_raw);
         error = Angle_ErrorDeg(adc_angle, i2c_angle);
 
-        printf("ADC_raw=%u, I2C_raw=%u, ADC_angle=%.2f, I2C_angle=%.2f, error=%.2f\r\n",
-               adc_raw, i2c_raw, adc_angle, i2c_angle, error);
+        adc_angle_x100 = (int32_t)(adc_angle * 100.0f);
+        i2c_angle_x100 = (int32_t)(i2c_angle * 100.0f);
+        error_x100 = (int32_t)(error * 100.0f);
+
+        printf("ADC_raw=%u, I2C_raw=%u, ADC_angle_x100=%ld, I2C_angle_x100=%ld, error_x100=%ld\r\n",
+               adc_raw, i2c_raw, adc_angle_x100, i2c_angle_x100, error_x100);
       }
 
       g_print_tick = now;
