@@ -63,11 +63,18 @@ static float Angle_ErrorDeg(float adc_angle, float i2c_angle);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-int fputc(int ch, FILE *f)
+int __io_putchar(int ch)
 {
-  (void)f;
-  HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1U, 100U);
+  uint8_t c = (uint8_t)ch;
+  HAL_UART_Transmit(&huart1, &c, 1U, 100U);
   return ch;
+}
+
+int _write(int file, char *ptr, int len)
+{
+  (void)file;
+  HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, 100U);
+  return len;
 }
 
 static HAL_StatusTypeDef Read_AdcRaw(uint16_t *adc_raw)
@@ -150,6 +157,9 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  HAL_UART_Transmit(&huart1, (uint8_t *)"UART direct test\r\n", 18, 100);
+  printf("printf test\r\n");
+
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
   {
     printf("[ERR] ADC calibration failed\r\n");
