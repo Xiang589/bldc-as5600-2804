@@ -25,6 +25,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
+#include "as5600.h"
 
 /* USER CODE END Includes */
 
@@ -46,17 +48,71 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+static uint32_t g_led_tick = 0U;
+static uint32_t g_print_tick = 0U;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+static HAL_StatusTypeDef Read_AdcRaw(uint16_t *adc_raw);
+static float Angle_ErrorDeg(float adc_angle, float i2c_angle);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+int fputc(int ch, FILE *f)
+{
+  (void)f;
+  HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1U, 100U);
+  return ch;
+}
+
+static HAL_StatusTypeDef Read_AdcRaw(uint16_t *adc_raw)
+{
+  if (adc_raw == NULL)
+  {
+    return HAL_ERROR;
+  }
+
+  if (HAL_ADC_Start(&hadc1) != HAL_OK)
+  {
+    return HAL_ERROR;
+  }
+
+  if (HAL_ADC_PollForConversion(&hadc1, 10U) != HAL_OK)
+  {
+    (void)HAL_ADC_Stop(&hadc1);
+    return HAL_TIMEOUT;
+  }
+
+  *adc_raw = (uint16_t)HAL_ADC_GetValue(&hadc1);
+
+  if (HAL_ADC_Stop(&hadc1) != HAL_OK)
+  {
+    return HAL_ERROR;
+  }
+
+  return HAL_OK;
+}
+
+static float Angle_ErrorDeg(float adc_angle, float i2c_angle)
+{
+  float error = adc_angle - i2c_angle;
+
+  while (error > 180.0f)
+  {
+    error -= 360.0f;
+  }
+  while (error < -180.0f)
+  {
+    error += 360.0f;
+  }
+
+  return error;
+}
 
 /* USER CODE END 0 */
 
@@ -93,6 +149,18 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
+  {
+    printf("[ERR] ADC calibration failed\r\n");
+  }
+  else
+  {
+    printf("[OK ] ADC calibration done\r\n");
+  }
+
+  printf("AS5600 ADC/I2C compare start\r\n");
+  g_led_tick = HAL_GetTick();
+  g_print_tick = HAL_GetTick();
 
   /* USER CODE END 2 */
 
@@ -103,6 +171,46 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    uint32_t now = HAL_GetTick();
+
+    if ((now - g_led_tick) >= 500U)
+    {
+      HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+      g_led_tick = now;
+    }
+
+    if ((now - g_print_tick) >= 200U)
+    {
+      uint16_t adc_raw = 0U;
+      uint16_t i2c_raw = 0U;
+      float adc_angle = 0.0f;
+      float i2c_angle = 0.0f;
+      float error = 0.0f;
+      HAL_StatusTypeDef adc_ret = Read_AdcRaw(&adc_raw);
+      HAL_StatusTypeDef i2c_ret = AS5600_ReadRawAngle(&hi2c1, &i2c_raw);
+
+      if (adc_ret != HAL_OK)
+      {
+        printf("[ERR] ADC read failed, ret=%d\r\n", adc_ret);
+      }
+
+      if (i2c_ret != HAL_OK)
+      {
+        printf("[ERR] AS5600 I2C read failed, ret=%d, i2c_err=0x%08lX\r\n", i2c_ret, hi2c1.ErrorCode);
+      }
+
+      if ((adc_ret == HAL_OK) && (i2c_ret == HAL_OK))
+      {
+        adc_angle = ((float)adc_raw * 360.0f) / 4095.0f;
+        i2c_angle = AS5600_RawToDegree(i2c_raw);
+        error = Angle_ErrorDeg(adc_angle, i2c_angle);
+
+        printf("ADC_raw=%u, I2C_raw=%u, ADC_angle=%.2f, I2C_angle=%.2f, error=%.2f\r\n",
+               adc_raw, i2c_raw, adc_angle, i2c_angle, error);
+      }
+
+      g_print_tick = now;
+    }
   }
   /* USER CODE END 3 */
 }
