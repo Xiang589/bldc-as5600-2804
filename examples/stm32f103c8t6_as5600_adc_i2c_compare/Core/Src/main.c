@@ -28,6 +28,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include "as5600.h"
+#include "motor_driver.h"
 
 /* USER CODE END Includes */
 
@@ -67,14 +68,14 @@ static float Angle_ErrorDeg(float adc_angle, float i2c_angle);
 int __io_putchar(int ch)
 {
   uint8_t c = (uint8_t)ch;
-  HAL_UART_Transmit(&huart1, &c, 1U, 100U);
+  HAL_UART_Transmit(&huart2, &c, 1U, 100U);
   return ch;
 }
 
 int _write(int file, char *ptr, int len)
 {
   (void)file;
-  HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, 100U);
+  HAL_UART_Transmit(&huart2, (uint8_t *)ptr, len, 100U);
   return len;
 }
 
@@ -159,8 +160,10 @@ int main(void)
   MX_TIM1_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  HAL_UART_Transmit(&huart1, (uint8_t *)"UART direct test\r\n", 18, 100);
+  HAL_UART_Transmit(&huart2, (uint8_t *)"UART direct test\r\n", 18, 100);
   printf("printf test\r\n");
+
+  MotorDriver_Init();
 
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
   {
