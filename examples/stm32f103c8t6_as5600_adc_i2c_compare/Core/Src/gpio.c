@@ -53,12 +53,22 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(PC13_RUN_LED_GPIO_Port, PC13_RUN_LED_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(FOCMINI_EN_GPIO_Port, FOCMINI_EN_Pin, GPIO_PIN_RESET);
+
   /*Configure GPIO pin : PC13_RUN_LED_Pin */
   GPIO_InitStruct.Pin = PC13_RUN_LED_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(PC13_RUN_LED_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : FOCMINI_EN_Pin */
+  GPIO_InitStruct.Pin = FOCMINI_EN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(FOCMINI_EN_GPIO_Port, &GPIO_InitStruct);
 
 }
 
