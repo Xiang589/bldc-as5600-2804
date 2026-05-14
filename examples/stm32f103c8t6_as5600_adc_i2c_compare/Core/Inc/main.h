@@ -59,6 +59,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define PC13_RUN_LED_Pin GPIO_PIN_13
 #define PC13_RUN_LED_GPIO_Port GPIOC
+#define FOCMINI_EN_Pin GPIO_PIN_12
+#define FOCMINI_EN_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
