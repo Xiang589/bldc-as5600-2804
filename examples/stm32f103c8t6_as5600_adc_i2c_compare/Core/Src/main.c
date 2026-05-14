@@ -39,6 +39,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define MOTOR_TEST_DURATION_MS 3000U
+#define MOTOR_TEST_STEP_MS     20U
 
 /* USER CODE END PD */
 
@@ -52,6 +54,19 @@
 /* USER CODE BEGIN PV */
 static uint32_t g_led_tick = 0U;
 static uint32_t g_print_tick = 0U;
+static uint8_t g_motor_test_active = 0U;
+static uint8_t g_motor_test_step = 0U;
+static uint32_t g_motor_test_start_tick = 0U;
+static uint32_t g_motor_test_step_tick = 0U;
+
+static const float kMotorTestDutyTable[6][3] = {
+  {0.60f, 0.40f, 0.50f},
+  {0.60f, 0.50f, 0.40f},
+  {0.50f, 0.60f, 0.40f},
+  {0.40f, 0.60f, 0.50f},
+  {0.40f, 0.50f, 0.60f},
+  {0.50f, 0.40f, 0.60f},
+};
 
 /* USER CODE END PV */
 
@@ -60,6 +75,10 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static HAL_StatusTypeDef Read_AdcRaw(uint16_t *adc_raw);
 static float Angle_ErrorDeg(float adc_angle, float i2c_angle);
+static void MotorTest_Start(uint32_t now);
+static void MotorTest_Stop(void);
+static void MotorTest_Update(uint32_t now);
+static void MotorTest_HandleUartCommand(uint32_t now);
 
 /* USER CODE END PFP */
 
@@ -122,6 +141,65 @@ static float Angle_ErrorDeg(float adc_angle, float i2c_angle)
   }
 
   return error;
+}
+
+static void MotorTest_Start(uint32_t now)
+{
+  MotorDriver_SetAllPwmZero();
+  g_motor_test_active = 1U;
+  g_motor_test_start_tick = now;
+  g_motor_test_step_tick = now;
+  g_motor_test_step = 0U;
+  MotorDriver_Enable();
+  printf("[MOTOR] open-loop test start\r\n");
+}
+
+static void MotorTest_Stop(void)
+{
+  MotorDriver_SetAllPwmZero();
+  MotorDriver_Disable();
+  g_motor_test_active = 0U;
+  printf("[MOTOR] open-loop test stop\r\n");
+}
+
+static void MotorTest_Update(uint32_t now)
+{
+  if (g_motor_test_active == 0U)
+  {
+    return;
+  }
+
+  if ((now - g_motor_test_start_tick) >= MOTOR_TEST_DURATION_MS)
+  {
+    MotorTest_Stop();
+    return;
+  }
+
+  if ((now - g_motor_test_step_tick) >= MOTOR_TEST_STEP_MS)
+  {
+    MotorDriver_SetPwmDuty(kMotorTestDutyTable[g_motor_test_step][0],
+                           kMotorTestDutyTable[g_motor_test_step][1],
+                           kMotorTestDutyTable[g_motor_test_step][2]);
+    g_motor_test_step = (uint8_t)((g_motor_test_step + 1U) % 6U);
+    g_motor_test_step_tick = now;
+  }
+}
+
+static void MotorTest_HandleUartCommand(uint32_t now)
+{
+  uint8_t rx = 0U;
+
+  if (HAL_UART_Receive(&huart2, &rx, 1U, 0U) == HAL_OK)
+  {
+    if (rx == 't')
+    {
+      MotorTest_Start(now);
+    }
+    else if (rx == 'x')
+    {
+      MotorTest_Stop();
+    }
+  }
 }
 
 /* USER CODE END 0 */
@@ -188,6 +266,9 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     uint32_t now = HAL_GetTick();
+
+    MotorTest_HandleUartCommand(now);
+    MotorTest_Update(now);
 
     if ((now - g_led_tick) >= 500U)
     {
