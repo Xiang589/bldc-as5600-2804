@@ -210,12 +210,19 @@ static void MotorTest_HandleUartCommand(uint32_t now)
 {
   uint8_t rx = 0U;
 
+  /* HAL_UART_Receive 是 HAL 的阻塞式接收 API。
+   * 这里 timeout=0U，表示“当前时刻立即尝试一次”，没有数据就立刻返回，
+   * 不会在此处长时间等待，因此整体效果是主循环里的轮询式接收。 */
+  /* 每次只读 1 字节，适合简单单字符命令调试，不适合高速/大量/不定长数据流。
+   * 后续学习可扩展到 HAL_UART_Receive_IT 或 HAL_UARTEx_ReceiveToIdle_DMA。 */
   if (HAL_UART_Receive(&huart2, &rx, 1U, 0U) == HAL_OK)
   {
+    /* 收到 't'：启动 3 秒开环测试流程。 */
     if (rx == 't')
     {
       MotorTest_Start(now);
     }
+    /* 收到 'x'：立即停止测试并回到安全状态。 */
     else if (rx == 'x')
     {
       MotorTest_Stop();
@@ -293,6 +300,7 @@ int main(void)
     /* HAL_GetTick() 返回系统运行毫秒数，是主循环非阻塞调度的基础。 */
     uint32_t now = HAL_GetTick();
 
+    /* 每轮主循环都检查一次串口命令，无需用 HAL_Delay 阻塞等待串口数据。 */
     MotorTest_HandleUartCommand(now);
     MotorTest_Update(now);
 
