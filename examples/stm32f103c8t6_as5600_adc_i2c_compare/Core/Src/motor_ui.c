@@ -38,14 +38,24 @@ static void Ui_DrawStatus(void){char l[32],t[32];uint16_t raw=0;LCD_FillRect(10U
 static TouchCalibration_t Cal_Build(void){TouchCalibration_t c;CalPoint*lt=&g_cal_points[0],*rt=&g_cal_points[1],*lb=&g_cal_points[2],*rb=&g_cal_points[3];uint32_t dx_x=(lt->rx>rt->rx)?lt->rx-rt->rx:rt->rx-lt->rx,dx_y=(lt->ry>rt->ry)?lt->ry-rt->ry:rt->ry-lt->ry;c.swap_xy=(dx_y>dx_x);if(!c.swap_xy){c.invert_x=(rt->rx<lt->rx);c.invert_y=(lb->ry<lt->ry);}else{c.invert_x=(rt->ry<lt->ry);c.invert_y=(lb->rx<lt->rx);}c.raw_x_min=(lt->rx+rt->rx)/2U;c.raw_x_max=(lb->rx+rb->rx)/2U;c.raw_y_min=(lt->ry+lb->ry)/2U;c.raw_y_max=(rt->ry+rb->ry)/2U;if(c.raw_x_min>c.raw_x_max){uint16_t t=c.raw_x_min;c.raw_x_min=c.raw_x_max;c.raw_x_max=t;}if(c.raw_y_min>c.raw_y_max){uint16_t t=c.raw_y_min;c.raw_y_min=c.raw_y_max;c.raw_y_max=t;}return c;}
 static uint8_t Cal_Validate(const TouchCalibration_t*cal)
 {
-  uint16_t cx = 0U, cy = 0U;
-  uint16_t c_raw_x = g_cal_points[4].rx;
-  uint16_t c_raw_y = g_cal_points[4].ry;
+  uint16_t rbx=0U, rby=0U, cx=0U, cy=0U;
+  int32_t erbx, erby, ecx, ecy;
   if (!cal) return 0U;
-  if ((cal->raw_x_max <= cal->raw_x_min) || (cal->raw_y_max <= cal->raw_y_min)) return 0U;
-  if ((cal->raw_x_max - cal->raw_x_min) < 1000U || (cal->raw_y_max - cal->raw_y_min) < 1000U) return 0U;
-  if (Touch_MapRawToPoint(c_raw_x, c_raw_y, cal, &cx, &cy) == 0U) return 0U;
-  if ((cx < 70U) || (cx > 170U) || (cy < 90U) || (cy > 230U)) return 0U;
+  if ((cal->ax == 0) && (cal->bx == 0) && (cal->ay == 0) && (cal->by == 0)) return 0U;
+
+  if (Touch_MapRawToPoint(g_cal_points[3].rx, g_cal_points[3].ry, cal, &rbx, &rby) == 0U) return 0U;
+  if (Touch_MapRawToPoint(g_cal_points[4].rx, g_cal_points[4].ry, cal, &cx, &cy) == 0U) return 0U;
+
+  erbx = (int32_t)rbx - 220;
+  erby = (int32_t)rby - 300;
+  ecx = (int32_t)cx - 120;
+  ecy = (int32_t)cy - 160;
+  if (erbx < 0) erbx = -erbx;
+  if (erby < 0) erby = -erby;
+  if (ecx < 0) ecx = -ecx;
+  if (ecy < 0) ecy = -ecy;
+
+  if ((erbx > 40) || (erby > 40) || (ecx > 40) || (ecy > 40)) return 0U;
   return 1U;
 }
 

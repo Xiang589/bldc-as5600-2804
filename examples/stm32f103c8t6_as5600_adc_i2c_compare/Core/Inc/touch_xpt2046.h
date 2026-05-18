@@ -8,13 +8,12 @@ extern "C" {
 #endif
 
 typedef struct {
-  uint16_t raw_x_min;
-  uint16_t raw_x_max;
-  uint16_t raw_y_min;
-  uint16_t raw_y_max;
-  uint8_t swap_xy;
-  uint8_t invert_x;
-  uint8_t invert_y;
+  int32_t ax;
+  int32_t bx;
+  int32_t cx;
+  int32_t ay;
+  int32_t by;
+  int32_t cy;
 } TouchCalibration_t;
 
 void Touch_Init(void);
