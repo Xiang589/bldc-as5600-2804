@@ -29,9 +29,12 @@
 /* USER CODE BEGIN Includes */
 /* printf 依赖标准输入输出接口，这里用于串口打印调试信息。 */
 #include <stdio.h>
+#include <stdlib.h>
 /* AS5600 驱动头文件，提供 I2C 读取角度/状态接口。 */
 #include "as5600.h"
 #include "motor_driver.h"
+#include "motor_control.h"
+#include "motor_ui.h"
 
 /* USER CODE END Includes */
 
@@ -44,6 +47,8 @@
 /* USER CODE BEGIN PD */
 #define MOTOR_TEST_DURATION_MS 3000U
 #define MOTOR_TEST_STEP_MS     20U
+#define ENABLE_PERIODIC_SERIAL_PRINT 0U
+#define SERIAL_PRINT_PERIOD_MS 1000U
 
 /* USER CODE END PD */
 
@@ -274,6 +279,8 @@ int main(void)
   printf("printf test\r\n");
 
   MotorDriver_Init();
+  MotorControl_Init();
+  MotorUi_Init();
 
   /* STM32F1 的 ADC 在使用前建议校准，可减小转换偏差。 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
@@ -303,8 +310,8 @@ int main(void)
     uint32_t now = HAL_GetTick();
 
     /* 每轮主循环都检查一次串口命令，无需用 HAL_Delay 阻塞等待串口数据。 */
-    MotorTest_HandleUartCommand(now);
-    MotorTest_Update(now);
+    MotorControl_Update(now);
+    MotorUi_Update(now);
 
     /* 每 500ms 翻转 LED，作为“程序仍在运行”的心跳指示。 */
     if ((now - g_led_tick) >= 500U)
@@ -313,8 +320,9 @@ int main(void)
       g_led_tick = now;
     }
 
-    /* 每 200ms 打印一次 ADC 与 I2C 角度对比。 */
-    if ((now - g_print_tick) >= 200U)
+#if ENABLE_PERIODIC_SERIAL_PRINT
+    /* 串口周期打印可开关，默认关闭以降低阻塞对触摸调试的影响。 */
+    if ((now - g_print_tick) >= SERIAL_PRINT_PERIOD_MS)
     {
       uint16_t adc_raw = 0U;
       uint16_t i2c_raw = 0U;
@@ -355,12 +363,15 @@ int main(void)
         i2c_angle_x100 = (int32_t)(i2c_angle * 100.0f);
         error_x100 = (int32_t)(error * 100.0f);
 
-        printf("ADC_raw=%u, I2C_raw=%u, ADC_angle_x100=%ld, I2C_angle_x100=%ld, error_x100=%ld\r\n",
-               adc_raw, i2c_raw, adc_angle_x100, i2c_angle_x100, error_x100);
+        printf("ADC: %ld.%02ld deg, AS5600: %ld.%02ld deg, ERR: %ld.%02ld deg\r\n",
+               adc_angle_x100 / 100, labs(adc_angle_x100 % 100),
+               i2c_angle_x100 / 100, labs(i2c_angle_x100 % 100),
+               error_x100 / 100, labs(error_x100 % 100));
       }
 
       g_print_tick = now;
     }
+#endif
   }
   /* USER CODE END 3 */
 }
