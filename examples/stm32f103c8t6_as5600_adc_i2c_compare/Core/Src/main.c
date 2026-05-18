@@ -29,6 +29,7 @@
 /* USER CODE BEGIN Includes */
 /* printf 依赖标准输入输出接口，这里用于串口打印调试信息。 */
 #include <stdio.h>
+#include <stdlib.h>
 /* AS5600 驱动头文件，提供 I2C 读取角度/状态接口。 */
 #include "as5600.h"
 #include "motor_driver.h"
@@ -362,8 +363,10 @@ int main(void)
         i2c_angle_x100 = (int32_t)(i2c_angle * 100.0f);
         error_x100 = (int32_t)(error * 100.0f);
 
-        printf("ADC_raw=%u, I2C_raw=%u, ADC_angle_x100=%ld, I2C_angle_x100=%ld, error_x100=%ld\r\n",
-               adc_raw, i2c_raw, adc_angle_x100, i2c_angle_x100, error_x100);
+        printf("ADC: %ld.%02ld deg, AS5600: %ld.%02ld deg, ERR: %ld.%02ld deg\r\n",
+               adc_angle_x100 / 100, labs(adc_angle_x100 % 100),
+               i2c_angle_x100 / 100, labs(i2c_angle_x100 % 100),
+               error_x100 / 100, labs(error_x100 % 100));
       }
 
       g_print_tick = now;
