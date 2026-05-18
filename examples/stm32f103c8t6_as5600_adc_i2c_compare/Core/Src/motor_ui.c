@@ -35,7 +35,44 @@ static void Cal_DrawPointScreen(uint8_t i){char l[24];LCD_FillScreen(C_BG);snpri
 static void Ui_DrawMainScreen(void){LCD_FillScreen(C_BG);LCD_DrawText(30U,8U,"AS5600 MOTOR",C_FG,C_BG);LCD_DrawRect(4U,4U,232U,24U,C_FG);Ui_DrawButton(&g_btn_cal);Ui_DrawButton(&g_btn_start);Ui_DrawButton(&g_btn_stop);Ui_DrawButton(&g_btn_plus);Ui_DrawButton(&g_btn_minus);} 
 static void Ui_DrawConfirmScreen(void){LCD_FillScreen(C_BG);LCD_DrawText(20U,40U,"RECALIBRATE?",C_FG,C_BG);Ui_DrawButton(&g_btn_yes);Ui_DrawButton(&g_btn_no);} 
 static void Ui_DrawStatus(void){char l[32],t[32];uint16_t raw=0;LCD_FillRect(10U,34U,220U,132U,C_BG);LCD_DrawText(10U,36U,"Motor:",C_FG,C_BG);LCD_DrawText(82U,36U,MotorControl_IsRunning()?"RUN":"STOP",MotorControl_IsRunning()?C_BTN:C_STOP,C_BG);snprintf(l,sizeof(l),"Duty: %u%%",(unsigned)(MotorControl_GetDuty()*100.0f));LCD_DrawText(10U,60U,l,C_FG,C_BG);if(AS5600_ReadRawAngle(&hi2c1,&raw)==HAL_OK)snprintf(l,sizeof(l),"AS5600: %u",raw);else snprintf(l,sizeof(l),"AS5600: ERR");LCD_DrawText(10U,84U,l,C_FG,C_BG);if(!g_touch_pen)snprintf(t,sizeof(t),"Touch: ---");else if(!g_touch_has_xy)snprintf(t,sizeof(t),"Touch: PEN");else snprintf(t,sizeof(t),"Touch: %u,%u",g_touch_x,g_touch_y);LCD_DrawText(10U,108U,t,C_FG,C_BG);} 
-static TouchCalibration_t Cal_Build(void){TouchCalibration_t c;CalPoint*lt=&g_cal_points[0],*rt=&g_cal_points[1],*lb=&g_cal_points[2],*rb=&g_cal_points[3];uint32_t dx_x=(lt->rx>rt->rx)?lt->rx-rt->rx:rt->rx-lt->rx,dx_y=(lt->ry>rt->ry)?lt->ry-rt->ry:rt->ry-lt->ry;c.swap_xy=(dx_y>dx_x);if(!c.swap_xy){c.invert_x=(rt->rx<lt->rx);c.invert_y=(lb->ry<lt->ry);}else{c.invert_x=(rt->ry<lt->ry);c.invert_y=(lb->rx<lt->rx);}c.raw_x_min=(lt->rx+rt->rx)/2U;c.raw_x_max=(lb->rx+rb->rx)/2U;c.raw_y_min=(lt->ry+lb->ry)/2U;c.raw_y_max=(rt->ry+rb->ry)/2U;if(c.raw_x_min>c.raw_x_max){uint16_t t=c.raw_x_min;c.raw_x_min=c.raw_x_max;c.raw_x_max=t;}if(c.raw_y_min>c.raw_y_max){uint16_t t=c.raw_y_min;c.raw_y_min=c.raw_y_max;c.raw_y_max=t;}return c;}
+static TouchCalibration_t Cal_Build(void)
+{
+  TouchCalibration_t cal = {0};
+  const CalPoint *lt = &g_cal_points[0];
+  const CalPoint *rt = &g_cal_points[1];
+  const CalPoint *lb = &g_cal_points[2];
+
+  const float x0 = (float)lt->rx, y0 = (float)lt->ry;
+  const float x1 = (float)rt->rx, y1 = (float)rt->ry;
+  const float x2 = (float)lb->rx, y2 = (float)lb->ry;
+
+  const float sx0 = 20.0f, sy0 = 20.0f;
+  const float sx1 = 220.0f, sy1 = 20.0f;
+  const float sx2 = 20.0f, sy2 = 300.0f;
+
+  const float denom = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+  if ((denom > -1e-6f) && (denom < 1e-6f))
+  {
+    return cal;
+  }
+
+  const float a = ((sx1 - sx0) * (y2 - y0) - (sx2 - sx0) * (y1 - y0)) / denom;
+  const float b = ((x1 - x0) * (sx2 - sx0) - (x2 - x0) * (sx1 - sx0)) / denom;
+  const float c = sx0 - a * x0 - b * y0;
+
+  const float d = ((sy1 - sy0) * (y2 - y0) - (sy2 - sy0) * (y1 - y0)) / denom;
+  const float e = ((x1 - x0) * (sy2 - sy0) - (x2 - x0) * (sy1 - sy0)) / denom;
+  const float f = sy0 - d * x0 - e * y0;
+
+  cal.ax = (int32_t)(a * 65536.0f);
+  cal.bx = (int32_t)(b * 65536.0f);
+  cal.cx = (int32_t)(c * 65536.0f);
+  cal.ay = (int32_t)(d * 65536.0f);
+  cal.by = (int32_t)(e * 65536.0f);
+  cal.cy = (int32_t)(f * 65536.0f);
+
+  return cal;
+}
 static uint8_t Cal_Validate(const TouchCalibration_t*cal)
 {
   uint16_t rbx=0U, rby=0U, cx=0U, cy=0U;
