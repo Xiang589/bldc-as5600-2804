@@ -7,18 +7,22 @@
 #define XPT_CMD_X 0xD0U
 #define XPT_CMD_Y 0x90U
 
-#define TOUCH_RAW_X_MIN 250U
-#define TOUCH_RAW_X_MAX 3850U
-#define TOUCH_RAW_Y_MIN 260U
-#define TOUCH_RAW_Y_MAX 3900U
+#define TOUCH_RAW_X_MIN_DEFAULT 250U
+#define TOUCH_RAW_X_MAX_DEFAULT 3850U
+#define TOUCH_RAW_Y_MIN_DEFAULT 260U
+#define TOUCH_RAW_Y_MAX_DEFAULT 3900U
+#define TOUCH_SWAP_XY_DEFAULT   1U
+#define TOUCH_INVERT_X_DEFAULT  0U
+#define TOUCH_INVERT_Y_DEFAULT  1U
 
-#define TOUCH_SWAP_XY   1U
-#define TOUCH_INVERT_X  0U
-#define TOUCH_INVERT_Y  1U
-
+static TouchCalibration_t g_cal;
 
 static uint16_t Touch_Map(uint16_t value, uint16_t in_min, uint16_t in_max, uint16_t out_max)
 {
+  if (in_max <= in_min)
+  {
+    return 0U;
+  }
   if (value < in_min) value = in_min;
   if (value > in_max) value = in_max;
   return (uint16_t)(((uint32_t)(value - in_min) * out_max) / (uint32_t)(in_max - in_min));
@@ -35,9 +39,39 @@ static uint16_t Touch_Read12(uint8_t cmd)
   return (uint16_t)(((rx[1] << 8U) | rx[2]) >> 3U);
 }
 
+void Touch_LoadDefaultCalibration(void)
+{
+  g_cal.raw_x_min = TOUCH_RAW_X_MIN_DEFAULT;
+  g_cal.raw_x_max = TOUCH_RAW_X_MAX_DEFAULT;
+  g_cal.raw_y_min = TOUCH_RAW_Y_MIN_DEFAULT;
+  g_cal.raw_y_max = TOUCH_RAW_Y_MAX_DEFAULT;
+  g_cal.swap_xy = TOUCH_SWAP_XY_DEFAULT;
+  g_cal.invert_x = TOUCH_INVERT_X_DEFAULT;
+  g_cal.invert_y = TOUCH_INVERT_Y_DEFAULT;
+}
+
+void Touch_SetCalibration(const TouchCalibration_t *cal)
+{
+  if (cal == NULL)
+  {
+    return;
+  }
+  g_cal = *cal;
+}
+
+void Touch_GetCalibration(TouchCalibration_t *cal)
+{
+  if (cal == NULL)
+  {
+    return;
+  }
+  *cal = g_cal;
+}
+
 void Touch_Init(void)
 {
   HAL_GPIO_WritePin(TP_CS_GPIO_Port, TP_CS_Pin, GPIO_PIN_SET);
+  Touch_LoadDefaultCalibration();
 }
 
 uint8_t Touch_IsPressed(void)
@@ -62,19 +96,19 @@ uint8_t Touch_ReadPoint(uint16_t *x, uint16_t *y)
   uint16_t sx = 0U;
   uint16_t sy = 0U;
 
-#if TOUCH_SWAP_XY
-  sx = Touch_Map(ry, TOUCH_RAW_Y_MIN, TOUCH_RAW_Y_MAX, LCD_WIDTH - 1U);
-  sy = Touch_Map(rx, TOUCH_RAW_X_MIN, TOUCH_RAW_X_MAX, LCD_HEIGHT - 1U);
-#else
-  sx = Touch_Map(rx, TOUCH_RAW_X_MIN, TOUCH_RAW_X_MAX, LCD_WIDTH - 1U);
-  sy = Touch_Map(ry, TOUCH_RAW_Y_MIN, TOUCH_RAW_Y_MAX, LCD_HEIGHT - 1U);
-#endif
-#if TOUCH_INVERT_X
-  sx = (LCD_WIDTH - 1U) - sx;
-#endif
-#if TOUCH_INVERT_Y
-  sy = (LCD_HEIGHT - 1U) - sy;
-#endif
+  if (g_cal.swap_xy != 0U)
+  {
+    sx = Touch_Map(ry, g_cal.raw_y_min, g_cal.raw_y_max, LCD_WIDTH - 1U);
+    sy = Touch_Map(rx, g_cal.raw_x_min, g_cal.raw_x_max, LCD_HEIGHT - 1U);
+  }
+  else
+  {
+    sx = Touch_Map(rx, g_cal.raw_x_min, g_cal.raw_x_max, LCD_WIDTH - 1U);
+    sy = Touch_Map(ry, g_cal.raw_y_min, g_cal.raw_y_max, LCD_HEIGHT - 1U);
+  }
+
+  if (g_cal.invert_x != 0U) sx = (LCD_WIDTH - 1U) - sx;
+  if (g_cal.invert_y != 0U) sy = (LCD_HEIGHT - 1U) - sy;
 
   *x = sx; *y = sy;
   printf("[TOUCH] raw_x=%u raw_y=%u x=%u y=%u\r\n", rx, ry, sx, sy);
