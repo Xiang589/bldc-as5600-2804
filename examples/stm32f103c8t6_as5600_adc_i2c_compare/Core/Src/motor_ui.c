@@ -14,6 +14,8 @@
 #define C_STOP 0xF800U
 #define C_CAL 0x001FU
 #define DUTY_STEP 0.05f
+#define TOUCH_SAMPLE_PERIOD_MS 25U
+#define UI_STATUS_PERIOD_MS 500U
 
 typedef struct { uint16_t x,y,w,h; const char *label; uint16_t color; } UiButton;
 typedef struct { const char *name; uint16_t sx; uint16_t sy; uint16_t rx; uint16_t ry; } CalPoint;
@@ -23,12 +25,24 @@ static UiButton g_btn_start={20,180,90,44,"START",C_BTN}, g_btn_stop={130,180,90
 static UiMode_t g_ui_mode=UI_MODE_MAIN;
 static uint32_t g_last_draw=0U,g_mode_tick=0U;
 static uint8_t g_touch_latch=0U,g_touch_pen=0U,g_touch_has_xy=0U,g_cal_wait_release=0U,g_wait_release_before_cal=0U,g_has_flash_cal=0U;
+static uint32_t g_touch_sample_tick=0U;
+static uint8_t g_last_hit_btn=0U,g_hit_stable_count=0U;
 static uint16_t g_touch_x=0U,g_touch_y=0U;
 static TouchCalibration_t g_prev_cal;
 static CalPoint g_cal_points[5]={{"LT",20,20,0,0},{"RT",220,20,0,0},{"LB",20,300,0,0},{"RB",220,300,0,0},{"CT",120,160,0,0}};
 static uint8_t g_cal_index=0U;
 
 static uint8_t Ui_Hit(const UiButton*b,uint16_t x,uint16_t y){return (x>=b->x)&&(x<(b->x+b->w))&&(y>=b->y)&&(y<(b->y+b->h));}
+static uint8_t Ui_ButtonId(uint16_t x, uint16_t y)
+{
+  if (Ui_Hit(&g_btn_cal, x, y)) return 1U;
+  if (Ui_Hit(&g_btn_start, x, y)) return 2U;
+  if (Ui_Hit(&g_btn_stop, x, y)) return 3U;
+  if (Ui_Hit(&g_btn_plus, x, y)) return 4U;
+  if (Ui_Hit(&g_btn_minus, x, y)) return 5U;
+  return 0U;
+}
+
 static void Ui_DrawButton(const UiButton*b){LCD_FillRect(b->x,b->y,b->w,b->h,b->color);LCD_DrawRect(b->x,b->y,b->w,b->h,C_FG);LCD_DrawText((uint16_t)(b->x+10U),(uint16_t)(b->y+6U),b->label,C_FG,b->color);} 
 static void Cal_DrawCross(uint16_t x,uint16_t y){LCD_FillRect((uint16_t)(x-10U),y,21U,1U,C_FG);LCD_FillRect(x,(uint16_t)(y-10U),1U,21U,C_FG);} 
 static void Cal_DrawPointScreen(uint8_t i){char l[24];LCD_FillScreen(C_BG);snprintf(l,sizeof(l),"CAL %u/5",(unsigned)(i+1U));LCD_DrawText(10U,8U,l,C_FG,C_BG);LCD_DrawText(10U,24U,"PRESS CROSS",C_FG,C_BG);Cal_DrawCross(g_cal_points[i].sx,g_cal_points[i].sy);} 
@@ -100,6 +114,32 @@ void MotorUi_Init(void){TouchCalibration_t cal;LCD_Init();LCD_SetBacklight(1U);T
 
 void MotorUi_Update(uint32_t now){uint16_t x,y;
 if(g_ui_mode==UI_MODE_CAL_DONE){if((now-g_mode_tick)>=1200U){g_ui_mode=UI_MODE_MAIN;Ui_DrawMainScreen();Ui_DrawStatus();}return;}
-if(g_ui_mode==UI_MODE_CAL_CONFIRM){if(Touch_IsPressed()){if(!g_touch_latch&&Touch_ReadPoint(&x,&y)){g_touch_latch=1U;if(Ui_Hit(&g_btn_yes,x,y)){MotorControl_Stop();g_cal_index=0U;g_cal_wait_release=0U;g_wait_release_before_cal=1U;g_ui_mode=UI_MODE_CALIBRATION;LCD_FillScreen(C_BG);LCD_DrawText(10U,8U,"RELEASE TOUCH",C_FG,C_BG);}else if(Ui_Hit(&g_btn_no,x,y)){g_ui_mode=UI_MODE_MAIN;Ui_DrawMainScreen();Ui_DrawStatus();}}}else g_touch_latch=0U;return;}
-if(g_ui_mode==UI_MODE_CALIBRATION){if(g_wait_release_before_cal){if(Touch_IsPressed()==0U){g_wait_release_before_cal=0U;Cal_DrawPointScreen(g_cal_index);}return;} if(g_cal_wait_release){if(Touch_IsPressed()==0U){g_cal_wait_release=0U;g_cal_index++;if(g_cal_index>=5U){TouchCalibration_t cal=Cal_Build();if(Cal_Validate(&cal)){TouchCalibration_t old;Touch_GetCalibration(&old);Touch_SetCalibration(&cal);MotorControl_Stop();if(TouchCalStorage_Save(&cal)){g_prev_cal=cal;g_has_flash_cal=1U;LCD_FillScreen(C_BG);LCD_DrawText(10U,8U,"CAL SAVED",C_FG,C_BG);}else{Touch_SetCalibration(&old);LCD_FillScreen(C_BG);LCD_DrawText(10U,8U,"CAL SAVE ERR",C_FG,C_BG);}}else{if(g_has_flash_cal)Touch_SetCalibration(&g_prev_cal);else Touch_LoadDefaultCalibration();LCD_FillScreen(C_BG);LCD_DrawText(10U,8U,"CAL INVALID",C_FG,C_BG);}g_mode_tick=now;g_ui_mode=UI_MODE_CAL_DONE;}else Cal_DrawPointScreen(g_cal_index);}return;} if(Touch_IsPressed()){uint32_t sx=0,sy=0;uint16_t rx=0,ry=0;uint8_t n=0;for(uint8_t i=0;i<8U;i++){if(Touch_ReadRaw(&rx,&ry)){sx+=rx;sy+=ry;n++;}HAL_Delay(5U);}if(n){g_cal_points[g_cal_index].rx=(uint16_t)(sx/n);g_cal_points[g_cal_index].ry=(uint16_t)(sy/n);printf("[CAL] %s screen_x=%u screen_y=%u raw_x=%u raw_y=%u\r\n",g_cal_points[g_cal_index].name,g_cal_points[g_cal_index].sx,g_cal_points[g_cal_index].sy,g_cal_points[g_cal_index].rx,g_cal_points[g_cal_index].ry);g_cal_wait_release=1U;}}return;}
-if(Touch_IsPressed()){g_touch_pen=1U;if(!g_touch_latch){printf("[TOUCH] PEN low\r\n");if(Touch_ReadPoint(&x,&y)){g_touch_has_xy=1U;g_touch_x=x;g_touch_y=y;printf("[TOUCH] x=%u y=%u\r\n",x,y);if(Ui_Hit(&g_btn_cal,x,y)){printf("[TOUCH] CAL\r\n");g_ui_mode=UI_MODE_CAL_CONFIRM;Ui_DrawConfirmScreen();}else if(Ui_Hit(&g_btn_start,x,y)){printf("[TOUCH] START\r\n");MotorControl_Start();}else if(Ui_Hit(&g_btn_stop,x,y)){printf("[TOUCH] STOP\r\n");MotorControl_Stop();}else if(Ui_Hit(&g_btn_plus,x,y)){printf("[TOUCH] DUTY+\r\n");MotorControl_SetDuty(MotorControl_GetDuty()+DUTY_STEP);}else if(Ui_Hit(&g_btn_minus,x,y)){printf("[TOUCH] DUTY-\r\n");MotorControl_SetDuty(MotorControl_GetDuty()-DUTY_STEP);}}else g_touch_has_xy=0U;g_touch_latch=1U;}}else{g_touch_latch=0U;g_touch_pen=0U;g_touch_has_xy=0U;} if((now-g_last_draw)>=250U){Ui_DrawStatus();g_last_draw=now;}}
+if(g_ui_mode==UI_MODE_CAL_CONFIRM){if(Touch_IsPressed()){ if(g_touch_latch==0U && g_touch_pen==0U) printf("[TOUCH] PEN low\r\n");if(!g_touch_latch&&Touch_ReadPoint(&x,&y)){g_touch_latch=1U;if(Ui_Hit(&g_btn_yes,x,y)){MotorControl_Stop();g_cal_index=0U;g_cal_wait_release=0U;g_wait_release_before_cal=1U;g_ui_mode=UI_MODE_CALIBRATION;LCD_FillScreen(C_BG);LCD_DrawText(10U,8U,"RELEASE TOUCH",C_FG,C_BG);}else if(Ui_Hit(&g_btn_no,x,y)){g_ui_mode=UI_MODE_MAIN;Ui_DrawMainScreen();Ui_DrawStatus();}}}else g_touch_latch=0U;return;}
+if(g_ui_mode==UI_MODE_CALIBRATION){if(g_wait_release_before_cal){if(Touch_IsPressed()==0U){g_wait_release_before_cal=0U;Cal_DrawPointScreen(g_cal_index);}return;} if(g_cal_wait_release){if(Touch_IsPressed()==0U){g_cal_wait_release=0U;g_cal_index++;if(g_cal_index>=5U){TouchCalibration_t cal=Cal_Build();if(Cal_Validate(&cal)){TouchCalibration_t old;Touch_GetCalibration(&old);Touch_SetCalibration(&cal);MotorControl_Stop();if(TouchCalStorage_Save(&cal)){g_prev_cal=cal;g_has_flash_cal=1U;LCD_FillScreen(C_BG);LCD_DrawText(10U,8U,"CAL SAVED",C_FG,C_BG);}else{Touch_SetCalibration(&old);LCD_FillScreen(C_BG);LCD_DrawText(10U,8U,"CAL SAVE ERR",C_FG,C_BG);}}else{if(g_has_flash_cal)Touch_SetCalibration(&g_prev_cal);else Touch_LoadDefaultCalibration();LCD_FillScreen(C_BG);LCD_DrawText(10U,8U,"CAL INVALID",C_FG,C_BG);}g_mode_tick=now;g_ui_mode=UI_MODE_CAL_DONE;}else Cal_DrawPointScreen(g_cal_index);}return;} if(Touch_IsPressed()){ if(g_touch_latch==0U && g_touch_pen==0U) printf("[TOUCH] PEN low\r\n");uint32_t sx=0,sy=0;uint16_t rx=0,ry=0;uint8_t n=0;for(uint8_t i=0;i<8U;i++){if(Touch_ReadRaw(&rx,&ry)){sx+=rx;sy+=ry;n++;}HAL_Delay(5U);}if(n){g_cal_points[g_cal_index].rx=(uint16_t)(sx/n);g_cal_points[g_cal_index].ry=(uint16_t)(sy/n);printf("[CAL] %s screen_x=%u screen_y=%u raw_x=%u raw_y=%u\r\n",g_cal_points[g_cal_index].name,g_cal_points[g_cal_index].sx,g_cal_points[g_cal_index].sy,g_cal_points[g_cal_index].rx,g_cal_points[g_cal_index].ry);g_cal_wait_release=1U;}}return;}
+if(Touch_IsPressed()){ if(g_touch_latch==0U && g_touch_pen==0U) printf("[TOUCH] PEN low\r\n");
+  g_touch_pen=1U;
+  if((now - g_touch_sample_tick) >= TOUCH_SAMPLE_PERIOD_MS){
+    g_touch_sample_tick = now;
+    if(Touch_ReadPoint(&x,&y)){
+      uint8_t hit = Ui_ButtonId(x,y);
+      g_touch_has_xy=1U; g_touch_x=x; g_touch_y=y;
+      printf("[TOUCH] x=%u y=%u\r\n",x,y);
+      if(hit!=0U){
+        if(hit==g_last_hit_btn){ if(g_hit_stable_count<255U) g_hit_stable_count++; }
+        else { g_last_hit_btn=hit; g_hit_stable_count=1U; }
+      } else { g_last_hit_btn=0U; g_hit_stable_count=0U; }
+
+      if((g_touch_latch==0U) && (g_hit_stable_count>=2U)){
+        g_touch_latch=1U;
+        if(hit==1U){ printf("[TOUCH] CAL\r\n"); g_ui_mode=UI_MODE_CAL_CONFIRM; Ui_DrawConfirmScreen(); }
+        else if(hit==2U){ printf("[TOUCH] START\r\n"); MotorControl_Start(); }
+        else if(hit==3U){ printf("[TOUCH] STOP\r\n"); MotorControl_Stop(); }
+        else if(hit==4U){ printf("[TOUCH] DUTY+\r\n"); MotorControl_SetDuty(MotorControl_GetDuty()+DUTY_STEP); }
+        else if(hit==5U){ printf("[TOUCH] DUTY-\r\n"); MotorControl_SetDuty(MotorControl_GetDuty()-DUTY_STEP); }
+      }
+    } else { g_touch_has_xy=0U; }
+  }
+}else{
+  g_touch_latch=0U; g_touch_pen=0U; g_touch_has_xy=0U; g_last_hit_btn=0U; g_hit_stable_count=0U;
+}
+if((now-g_last_draw)>=UI_STATUS_PERIOD_MS){Ui_DrawStatus();g_last_draw=now;}}
