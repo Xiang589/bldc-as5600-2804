@@ -26,7 +26,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+/* printf 依赖标准输入输出接口，这里用于串口打印调试信息。 */
 #include <stdio.h>
+/* AS5600 驱动头文件，提供 I2C 读取角度/状态接口。 */
 #include "as5600.h"
 #include "motor_driver.h"
 
@@ -52,6 +54,10 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+/* 基于 HAL_GetTick() 的非阻塞定时基准：
+ * - g_led_tick 控制 LED 心跳闪烁
+ * - g_print_tick 控制串口周期打印
+ * 这样写比 HAL_Delay() 更利于在主循环里并行处理多任务。 */
 static uint32_t g_led_tick = 0U;
 static uint32_t g_print_tick = 0U;
 static uint8_t g_motor_test_active = 0U;
@@ -84,6 +90,8 @@ static void MotorTest_HandleUartCommand(uint32_t now);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* 部分编译环境中，printf 最终会逐字符调用 __io_putchar。
+ * 这里把每个字符重定向到 USART2，便于串口终端查看输出。 */
 int __io_putchar(int ch)
 {
   uint8_t c = (uint8_t)ch;
@@ -91,6 +99,9 @@ int __io_putchar(int ch)
   return ch;
 }
 
+/* GCC/newlib 常通过 _write 完成 printf 输出。
+ * 这里把缓冲区整体转发到 USART2。
+ * 注：__io_putchar 与 _write 通常保留一种即可，但两者并存可兼容不同工具链配置。 */
 int _write(int file, char *ptr, int len)
 {
   (void)file;
@@ -100,25 +111,32 @@ int _write(int file, char *ptr, int len)
 
 static HAL_StatusTypeDef Read_AdcRaw(uint16_t *adc_raw)
 {
+  /* 防御式编程：先检查输出指针。 */
   if (adc_raw == NULL)
   {
     return HAL_ERROR;
   }
 
+  /* ADC 单次采样流程第 1 步：启动 ADC。 */
   if (HAL_ADC_Start(&hadc1) != HAL_OK)
   {
     return HAL_ERROR;
   }
 
+  /* 第 2 步：等待转换完成。
+   * timeout=10ms 表示最多阻塞等待 10ms。 */
   HAL_StatusTypeDef ret = HAL_ADC_PollForConversion(&hadc1, 10U);
   if (ret != HAL_OK)
   {
+    /* 等待失败也要 Stop，避免 ADC 保持在不期望状态。 */
     (void)HAL_ADC_Stop(&hadc1);
     return ret;
   }
 
+  /* 第 3 步：读取转换结果（12 位，0~4095）。 */
   *adc_raw = (uint16_t)HAL_ADC_GetValue(&hadc1);
 
+  /* 第 4 步：停止 ADC，完成一次“单次采样”闭环。 */
   if (HAL_ADC_Stop(&hadc1) != HAL_OK)
   {
     return HAL_ERROR;
@@ -129,8 +147,11 @@ static HAL_StatusTypeDef Read_AdcRaw(uint16_t *adc_raw)
 
 static float Angle_ErrorDeg(float adc_angle, float i2c_angle)
 {
+  /* 先计算原始差值。 */
   float error = adc_angle - i2c_angle;
 
+  /* 角度是环形量，误差要折叠到 [-180, +180]：
+   * 例如 359° 与 1° 实际误差应为 -2° 或 +2°，而不是 358°。 */
   while (error > 180.0f)
   {
     error -= 360.0f;
@@ -189,12 +210,19 @@ static void MotorTest_HandleUartCommand(uint32_t now)
 {
   uint8_t rx = 0U;
 
+  /* HAL_UART_Receive 是 HAL 的阻塞式接收 API。
+   * 这里 timeout=0U，表示“当前时刻立即尝试一次”，没有数据就立刻返回，
+   * 不会在此处长时间等待，因此整体效果是主循环里的轮询式接收。 */
+  /* 每次只读 1 字节，适合简单单字符命令调试，不适合高速/大量/不定长数据流。
+   * 后续学习可扩展到 HAL_UART_Receive_IT 或 HAL_UARTEx_ReceiveToIdle_DMA。 */
   if (HAL_UART_Receive(&huart2, &rx, 1U, 0U) == HAL_OK)
   {
+    /* 收到 't'：启动 3 秒开环测试流程。 */
     if (rx == 't')
     {
       MotorTest_Start(now);
     }
+    /* 收到 'x'：立即停止测试并回到安全状态。 */
     else if (rx == 'x')
     {
       MotorTest_Stop();
@@ -238,11 +266,14 @@ int main(void)
   MX_TIM1_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  /* 直接发送字符串：用于确认 USART2 外设与引脚配置正常。 */
   HAL_UART_Transmit(&huart2, (uint8_t *)"UART direct test\r\n", 18, 100);
+  /* printf 测试：用于确认重定向链路（__io_putchar/_write）正常。 */
   printf("printf test\r\n");
 
   MotorDriver_Init();
 
+  /* STM32F1 的 ADC 在使用前建议校准，可减小转换偏差。 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
   {
     printf("[ERR] ADC calibration failed\r\n");
@@ -253,6 +284,7 @@ int main(void)
   }
 
   printf("AS5600 ADC/I2C compare start\r\n");
+  /* 从当前系统 tick 开始计时，避免初次比较时出现异常大时间差。 */
   g_led_tick = HAL_GetTick();
   g_print_tick = HAL_GetTick();
 
@@ -265,17 +297,21 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* HAL_GetTick() 返回系统运行毫秒数，是主循环非阻塞调度的基础。 */
     uint32_t now = HAL_GetTick();
 
+    /* 每轮主循环都检查一次串口命令，无需用 HAL_Delay 阻塞等待串口数据。 */
     MotorTest_HandleUartCommand(now);
     MotorTest_Update(now);
 
+    /* 每 500ms 翻转 LED，作为“程序仍在运行”的心跳指示。 */
     if ((now - g_led_tick) >= 500U)
     {
       HAL_GPIO_TogglePin(PC13_RUN_LED_GPIO_Port, PC13_RUN_LED_Pin);
       g_led_tick = now;
     }
 
+    /* 每 200ms 打印一次 ADC 与 I2C 角度对比。 */
     if ((now - g_print_tick) >= 200U)
     {
       uint16_t adc_raw = 0U;
@@ -286,6 +322,9 @@ int main(void)
       int32_t adc_angle_x100 = 0;
       int32_t i2c_angle_x100 = 0;
       int32_t error_x100 = 0;
+      /* 读取流程：
+       * 1) ADC 读模拟角度电压对应的原始值
+       * 2) I2C 读 AS5600 的 RAW_ANGLE */
       HAL_StatusTypeDef adc_ret = Read_AdcRaw(&adc_raw);
       HAL_StatusTypeDef i2c_ret = AS5600_ReadRawAngle(&hi2c1, &i2c_raw);
 
@@ -301,10 +340,15 @@ int main(void)
 
       if ((adc_ret == HAL_OK) && (i2c_ret == HAL_OK))
       {
+        /* STM32F103 ADC 为 12 位：0~4095 -> 0~360 度。 */
         adc_angle = ((float)adc_raw * 360.0f) / 4095.0f;
+        /* AS5600 也是 12 位，使用驱动提供的统一换算函数。 */
         i2c_angle = AS5600_RawToDegree(i2c_raw);
+        /* 计算环形角度误差（限制在 -180~+180 度）。 */
         error = Angle_ErrorDeg(adc_angle, i2c_angle);
 
+        /* 用“角度×100”的整数打印，规避部分嵌入式环境 float printf 额外链接配置问题。
+         * 例如 12345 表示 123.45 度。 */
         adc_angle_x100 = (int32_t)(adc_angle * 100.0f);
         i2c_angle_x100 = (int32_t)(i2c_angle * 100.0f);
         error_x100 = (int32_t)(error * 100.0f);
