@@ -15,6 +15,14 @@
 #define TOUCH_INVERT_X  0U
 #define TOUCH_INVERT_Y  1U
 
+
+static uint16_t Touch_Map(uint16_t value, uint16_t in_min, uint16_t in_max, uint16_t out_max)
+{
+  if (value < in_min) value = in_min;
+  if (value > in_max) value = in_max;
+  return (uint16_t)(((uint32_t)(value - in_min) * out_max) / (uint32_t)(in_max - in_min));
+}
+
 static uint16_t Touch_Read12(uint8_t cmd)
 {
   uint8_t tx[3] = {cmd, 0x00U, 0x00U};
@@ -49,16 +57,15 @@ uint8_t Touch_ReadPoint(uint16_t *x, uint16_t *y)
   if ((x == NULL) || (y == NULL)) return 0U;
   if (Touch_ReadRaw(&rx, &ry) == 0U) return 0U;
 
-  if (rx < TOUCH_RAW_X_MIN) rx = TOUCH_RAW_X_MIN;
-  if (rx > TOUCH_RAW_X_MAX) rx = TOUCH_RAW_X_MAX;
-  if (ry < TOUCH_RAW_Y_MIN) ry = TOUCH_RAW_Y_MIN;
-  if (ry > TOUCH_RAW_Y_MAX) ry = TOUCH_RAW_Y_MAX;
-
-  uint16_t sx = (uint16_t)(((uint32_t)(rx - TOUCH_RAW_X_MIN) * (LCD_WIDTH - 1U)) / (TOUCH_RAW_X_MAX - TOUCH_RAW_X_MIN));
-  uint16_t sy = (uint16_t)(((uint32_t)(ry - TOUCH_RAW_Y_MIN) * (LCD_HEIGHT - 1U)) / (TOUCH_RAW_Y_MAX - TOUCH_RAW_Y_MIN));
+  uint16_t sx = 0U;
+  uint16_t sy = 0U;
 
 #if TOUCH_SWAP_XY
-  uint16_t t = sx; sx = sy; sy = t;
+  sx = Touch_Map(ry, TOUCH_RAW_Y_MIN, TOUCH_RAW_Y_MAX, LCD_WIDTH - 1U);
+  sy = Touch_Map(rx, TOUCH_RAW_X_MIN, TOUCH_RAW_X_MAX, LCD_HEIGHT - 1U);
+#else
+  sx = Touch_Map(rx, TOUCH_RAW_X_MIN, TOUCH_RAW_X_MAX, LCD_WIDTH - 1U);
+  sy = Touch_Map(ry, TOUCH_RAW_Y_MIN, TOUCH_RAW_Y_MAX, LCD_HEIGHT - 1U);
 #endif
 #if TOUCH_INVERT_X
   sx = (LCD_WIDTH - 1U) - sx;
@@ -66,6 +73,7 @@ uint8_t Touch_ReadPoint(uint16_t *x, uint16_t *y)
 #if TOUCH_INVERT_Y
   sy = (LCD_HEIGHT - 1U) - sy;
 #endif
+
   *x = sx; *y = sy;
   return 1U;
 }
