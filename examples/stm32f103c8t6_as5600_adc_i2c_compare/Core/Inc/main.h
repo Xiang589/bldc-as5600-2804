@@ -59,8 +59,20 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define PC13_RUN_LED_Pin GPIO_PIN_13
 #define PC13_RUN_LED_GPIO_Port GPIOC
+#define LCD_CS_Pin GPIO_PIN_4
+#define LCD_CS_GPIO_Port GPIOA
+#define TP_PEN_Pin GPIO_PIN_0
+#define TP_PEN_GPIO_Port GPIOB
+#define TP_CS_Pin GPIO_PIN_1
+#define TP_CS_GPIO_Port GPIOB
+#define LCD_DC_Pin GPIO_PIN_10
+#define LCD_DC_GPIO_Port GPIOB
+#define LCD_RES_Pin GPIO_PIN_11
+#define LCD_RES_GPIO_Port GPIOB
 #define FOCMINI_EN_Pin GPIO_PIN_12
 #define FOCMINI_EN_GPIO_Port GPIOB
+#define LCD_BLK_Pin GPIO_PIN_13
+#define LCD_BLK_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

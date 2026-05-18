@@ -54,6 +54,12 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(PC13_RUN_LED_GPIO_Port, PC13_RUN_LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, TP_CS_Pin|LCD_DC_Pin|LCD_RES_Pin|LCD_BLK_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(FOCMINI_EN_GPIO_Port, FOCMINI_EN_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13_RUN_LED_Pin */
@@ -63,12 +69,27 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(PC13_RUN_LED_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : FOCMINI_EN_Pin */
-  GPIO_InitStruct.Pin = FOCMINI_EN_Pin;
+  /*Configure GPIO pin : LCD_CS_Pin */
+  GPIO_InitStruct.Pin = LCD_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(FOCMINI_EN_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(LCD_CS_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : TP_PEN_Pin */
+  GPIO_InitStruct.Pin = TP_PEN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(TP_PEN_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : TP_CS_Pin LCD_DC_Pin LCD_RES_Pin FOCMINI_EN_Pin
+                           LCD_BLK_Pin */
+  GPIO_InitStruct.Pin = TP_CS_Pin|LCD_DC_Pin|LCD_RES_Pin|FOCMINI_EN_Pin
+                          |LCD_BLK_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 }
 
