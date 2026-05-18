@@ -87,30 +87,35 @@ uint8_t Touch_ReadRaw(uint16_t *raw_x, uint16_t *raw_y)
   return 1U;
 }
 
+uint8_t Touch_MapRawToPoint(uint16_t raw_x, uint16_t raw_y,
+                            const TouchCalibration_t *cal,
+                            uint16_t *x, uint16_t *y)
+{
+  uint16_t sx = 0U, sy = 0U;
+  const TouchCalibration_t *cc = (cal == NULL) ? &g_cal : cal;
+  if ((x == NULL) || (y == NULL)) return 0U;
+  if (cc->swap_xy != 0U)
+  {
+    sx = Touch_Map(raw_y, cc->raw_y_min, cc->raw_y_max, LCD_WIDTH - 1U);
+    sy = Touch_Map(raw_x, cc->raw_x_min, cc->raw_x_max, LCD_HEIGHT - 1U);
+  }
+  else
+  {
+    sx = Touch_Map(raw_x, cc->raw_x_min, cc->raw_x_max, LCD_WIDTH - 1U);
+    sy = Touch_Map(raw_y, cc->raw_y_min, cc->raw_y_max, LCD_HEIGHT - 1U);
+  }
+  if (cc->invert_x != 0U) sx = (LCD_WIDTH - 1U) - sx;
+  if (cc->invert_y != 0U) sy = (LCD_HEIGHT - 1U) - sy;
+  *x = sx; *y = sy;
+  return 1U;
+}
+
 uint8_t Touch_ReadPoint(uint16_t *x, uint16_t *y)
 {
   uint16_t rx, ry;
   if ((x == NULL) || (y == NULL)) return 0U;
   if (Touch_ReadRaw(&rx, &ry) == 0U) return 0U;
-
-  uint16_t sx = 0U;
-  uint16_t sy = 0U;
-
-  if (g_cal.swap_xy != 0U)
-  {
-    sx = Touch_Map(ry, g_cal.raw_y_min, g_cal.raw_y_max, LCD_WIDTH - 1U);
-    sy = Touch_Map(rx, g_cal.raw_x_min, g_cal.raw_x_max, LCD_HEIGHT - 1U);
-  }
-  else
-  {
-    sx = Touch_Map(rx, g_cal.raw_x_min, g_cal.raw_x_max, LCD_WIDTH - 1U);
-    sy = Touch_Map(ry, g_cal.raw_y_min, g_cal.raw_y_max, LCD_HEIGHT - 1U);
-  }
-
-  if (g_cal.invert_x != 0U) sx = (LCD_WIDTH - 1U) - sx;
-  if (g_cal.invert_y != 0U) sy = (LCD_HEIGHT - 1U) - sy;
-
-  *x = sx; *y = sy;
-  printf("[TOUCH] raw_x=%u raw_y=%u x=%u y=%u\r\n", rx, ry, sx, sy);
+  if (Touch_MapRawToPoint(rx, ry, &g_cal, x, y) == 0U) return 0U;
+  printf("[TOUCH] raw_x=%u raw_y=%u x=%u y=%u\r\n", rx, ry, *x, *y);
   return 1U;
 }

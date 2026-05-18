@@ -36,7 +36,18 @@ static void Ui_DrawMainScreen(void){LCD_FillScreen(C_BG);LCD_DrawText(30U,8U,"AS
 static void Ui_DrawConfirmScreen(void){LCD_FillScreen(C_BG);LCD_DrawText(20U,40U,"RECALIBRATE?",C_FG,C_BG);Ui_DrawButton(&g_btn_yes);Ui_DrawButton(&g_btn_no);} 
 static void Ui_DrawStatus(void){char l[32],t[32];uint16_t raw=0;LCD_FillRect(10U,34U,220U,132U,C_BG);LCD_DrawText(10U,36U,"Motor:",C_FG,C_BG);LCD_DrawText(82U,36U,MotorControl_IsRunning()?"RUN":"STOP",MotorControl_IsRunning()?C_BTN:C_STOP,C_BG);snprintf(l,sizeof(l),"Duty: %u%%",(unsigned)(MotorControl_GetDuty()*100.0f));LCD_DrawText(10U,60U,l,C_FG,C_BG);if(AS5600_ReadRawAngle(&hi2c1,&raw)==HAL_OK)snprintf(l,sizeof(l),"AS5600: %u",raw);else snprintf(l,sizeof(l),"AS5600: ERR");LCD_DrawText(10U,84U,l,C_FG,C_BG);if(!g_touch_pen)snprintf(t,sizeof(t),"Touch: ---");else if(!g_touch_has_xy)snprintf(t,sizeof(t),"Touch: PEN");else snprintf(t,sizeof(t),"Touch: %u,%u",g_touch_x,g_touch_y);LCD_DrawText(10U,108U,t,C_FG,C_BG);} 
 static TouchCalibration_t Cal_Build(void){TouchCalibration_t c;CalPoint*lt=&g_cal_points[0],*rt=&g_cal_points[1],*lb=&g_cal_points[2],*rb=&g_cal_points[3];uint32_t dx_x=(lt->rx>rt->rx)?lt->rx-rt->rx:rt->rx-lt->rx,dx_y=(lt->ry>rt->ry)?lt->ry-rt->ry:rt->ry-lt->ry;c.swap_xy=(dx_y>dx_x);if(!c.swap_xy){c.invert_x=(rt->rx<lt->rx);c.invert_y=(lb->ry<lt->ry);}else{c.invert_x=(rt->ry<lt->ry);c.invert_y=(lb->rx<lt->rx);}c.raw_x_min=(lt->rx+rt->rx)/2U;c.raw_x_max=(lb->rx+rb->rx)/2U;c.raw_y_min=(lt->ry+lb->ry)/2U;c.raw_y_max=(rt->ry+rb->ry)/2U;if(c.raw_x_min>c.raw_x_max){uint16_t t=c.raw_x_min;c.raw_x_min=c.raw_x_max;c.raw_x_max=t;}if(c.raw_y_min>c.raw_y_max){uint16_t t=c.raw_y_min;c.raw_y_min=c.raw_y_max;c.raw_y_max=t;}return c;}
-static uint8_t Cal_Validate(const TouchCalibration_t*cal){TouchCalibration_t bak;uint16_t cx,cy;if(!cal) return 0U; if((cal->raw_x_max<=cal->raw_x_min)||(cal->raw_y_max<=cal->raw_y_min)) return 0U; if((cal->raw_x_max-cal->raw_x_min)<1000U||(cal->raw_y_max-cal->raw_y_min)<1000U) return 0U; Touch_GetCalibration(&bak);Touch_SetCalibration(cal); if(Touch_ReadPoint(&cx,&cy)==0U){Touch_SetCalibration(&bak);return 0U;} Touch_SetCalibration(&bak); return (cx>=70U&&cx<=170U&&cy>=90U&&cy<=230U)?1U:0U;}
+static uint8_t Cal_Validate(const TouchCalibration_t*cal)
+{
+  uint16_t cx = 0U, cy = 0U;
+  uint16_t c_raw_x = g_cal_points[4].rx;
+  uint16_t c_raw_y = g_cal_points[4].ry;
+  if (!cal) return 0U;
+  if ((cal->raw_x_max <= cal->raw_x_min) || (cal->raw_y_max <= cal->raw_y_min)) return 0U;
+  if ((cal->raw_x_max - cal->raw_x_min) < 1000U || (cal->raw_y_max - cal->raw_y_min) < 1000U) return 0U;
+  if (Touch_MapRawToPoint(c_raw_x, c_raw_y, cal, &cx, &cy) == 0U) return 0U;
+  if ((cx < 70U) || (cx > 170U) || (cy < 90U) || (cy > 230U)) return 0U;
+  return 1U;
+}
 
 void MotorUi_Init(void){TouchCalibration_t cal;LCD_Init();LCD_SetBacklight(1U);Touch_Init();if(TouchCalStorage_Load(&cal)){Touch_SetCalibration(&cal);g_prev_cal=cal;g_has_flash_cal=1U;printf("[CAL] loaded from flash\r\n");g_ui_mode=UI_MODE_MAIN;Ui_DrawMainScreen();Ui_DrawStatus();}else{Touch_LoadDefaultCalibration();printf("[CAL] use defaults\r\n");g_ui_mode=UI_MODE_CALIBRATION;g_cal_index=0U;g_cal_wait_release=0U;g_wait_release_before_cal=1U;LCD_FillScreen(C_BG);LCD_DrawText(10U,8U,"NO CAL IN FLASH",C_FG,C_BG);LCD_DrawText(10U,24U,"RELEASE THEN CAL",C_FG,C_BG);} }
 

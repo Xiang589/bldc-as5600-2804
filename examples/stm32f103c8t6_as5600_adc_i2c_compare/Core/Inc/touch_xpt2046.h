@@ -24,6 +24,9 @@ uint8_t Touch_ReadPoint(uint16_t *x, uint16_t *y);
 void Touch_SetCalibration(const TouchCalibration_t *cal);
 void Touch_GetCalibration(TouchCalibration_t *cal);
 void Touch_LoadDefaultCalibration(void);
+uint8_t Touch_MapRawToPoint(uint16_t raw_x, uint16_t raw_y,
+                            const TouchCalibration_t *cal,
+                            uint16_t *x, uint16_t *y);
 
 #ifdef __cplusplus
 }
