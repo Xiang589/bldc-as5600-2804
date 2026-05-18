@@ -24,6 +24,10 @@ static UiButton g_btn_minus = {130,236, 90, 44, "DUTY-", C_BTN};
 
 static uint32_t g_last_draw = 0U;
 static uint8_t g_touch_latch = 0U;
+static uint8_t g_touch_pen = 0U;
+static uint8_t g_touch_has_xy = 0U;
+static uint16_t g_touch_x = 0U;
+static uint16_t g_touch_y = 0U;
 
 static void Ui_DrawButton(const UiButton *b)
 {
@@ -39,6 +43,7 @@ static void Ui_DrawStatus(void)
 {
   char line[32];
   uint16_t raw = 0U;
+  char touch_line[32];
 
   LCD_FillRect(10U, 34U, 220U, 132U, C_BG);
   LCD_DrawText(10U, 36U, "Motor:", C_FG, C_BG);
@@ -57,6 +62,20 @@ static void Ui_DrawStatus(void)
     snprintf(line, sizeof(line), "AS5600: ERR");
   }
   LCD_DrawText(10U, 84U, line, C_FG, C_BG);
+
+  if (g_touch_pen == 0U)
+  {
+    snprintf(touch_line, sizeof(touch_line), "Touch: ---");
+  }
+  else if (g_touch_has_xy == 0U)
+  {
+    snprintf(touch_line, sizeof(touch_line), "Touch: PEN");
+  }
+  else
+  {
+    snprintf(touch_line, sizeof(touch_line), "Touch: %u,%u", g_touch_x, g_touch_y);
+  }
+  LCD_DrawText(10U, 108U, touch_line, C_FG, C_BG);
 }
 
 void MotorUi_Init(void)
@@ -83,18 +102,33 @@ void MotorUi_Update(uint32_t now)
 
   if (Touch_IsPressed() != 0U)
   {
-    if ((g_touch_latch == 0U) && (Touch_ReadPoint(&x, &y) != 0U))
+    g_touch_pen = 1U;
+    if (g_touch_latch == 0U)
     {
+      printf("[TOUCH] PEN low\r\n");
+      if (Touch_ReadPoint(&x, &y) != 0U)
+      {
+        g_touch_has_xy = 1U;
+        g_touch_x = x;
+        g_touch_y = y;
+        printf("[TOUCH] x=%u y=%u\r\n", x, y);
+        if (Ui_Hit(&g_btn_start, x, y)) { printf("[TOUCH] START\r\n"); MotorControl_Start(); }
+        else if (Ui_Hit(&g_btn_stop, x, y)) { printf("[TOUCH] STOP\r\n"); MotorControl_Stop(); }
+        else if (Ui_Hit(&g_btn_plus, x, y)) { printf("[TOUCH] DUTY+\r\n"); MotorControl_SetDuty(MotorControl_GetDuty() + DUTY_STEP); }
+        else if (Ui_Hit(&g_btn_minus, x, y)) { printf("[TOUCH] DUTY-\r\n"); MotorControl_SetDuty(MotorControl_GetDuty() - DUTY_STEP); }
+      }
+      else
+      {
+        g_touch_has_xy = 0U;
+      }
       g_touch_latch = 1U;
-      if (Ui_Hit(&g_btn_start, x, y)) MotorControl_Start();
-      else if (Ui_Hit(&g_btn_stop, x, y)) MotorControl_Stop();
-      else if (Ui_Hit(&g_btn_plus, x, y)) MotorControl_SetDuty(MotorControl_GetDuty() + DUTY_STEP);
-      else if (Ui_Hit(&g_btn_minus, x, y)) MotorControl_SetDuty(MotorControl_GetDuty() - DUTY_STEP);
     }
   }
   else
   {
     g_touch_latch = 0U;
+    g_touch_pen = 0U;
+    g_touch_has_xy = 0U;
   }
 
   if ((now - g_last_draw) >= 250U)

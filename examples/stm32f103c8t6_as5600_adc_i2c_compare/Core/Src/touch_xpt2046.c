@@ -2,6 +2,7 @@
 
 #include "lcd_ili9341.h"
 #include "spi.h"
+#include <stdio.h>
 
 #define XPT_CMD_X 0xD0U
 #define XPT_CMD_Y 0x90U
@@ -27,6 +28,7 @@ static uint16_t Touch_Read12(uint8_t cmd)
 {
   uint8_t tx[3] = {cmd, 0x00U, 0x00U};
   uint8_t rx[3] = {0};
+  HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(TP_CS_GPIO_Port, TP_CS_Pin, GPIO_PIN_RESET);
   HAL_SPI_TransmitReceive(&hspi1, tx, rx, 3U, 100U);
   HAL_GPIO_WritePin(TP_CS_GPIO_Port, TP_CS_Pin, GPIO_PIN_SET);
@@ -75,5 +77,6 @@ uint8_t Touch_ReadPoint(uint16_t *x, uint16_t *y)
 #endif
 
   *x = sx; *y = sy;
+  printf("[TOUCH] raw_x=%u raw_y=%u x=%u y=%u\r\n", rx, ry, sx, sy);
   return 1U;
 }

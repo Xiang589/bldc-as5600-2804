@@ -11,7 +11,7 @@
 #define ILI9341_MADCTL  0x36
 #define ILI9341_PIXFMT  0x3A
 
-static void LCD_Select(uint8_t sel) { HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, sel ? GPIO_PIN_RESET : GPIO_PIN_SET); }
+static void LCD_Select(uint8_t sel) { if (sel != 0U) { HAL_GPIO_WritePin(TP_CS_GPIO_Port, TP_CS_Pin, GPIO_PIN_SET); } HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, sel ? GPIO_PIN_RESET : GPIO_PIN_SET); }
 static void LCD_DC(uint8_t dc) { HAL_GPIO_WritePin(LCD_DC_GPIO_Port, LCD_DC_Pin, dc ? GPIO_PIN_SET : GPIO_PIN_RESET); }
 
 static void LCD_WriteCmd(uint8_t cmd) { LCD_DC(0U); LCD_Select(1U); HAL_SPI_Transmit(&hspi1, &cmd, 1U, 100U); LCD_Select(0U); }
