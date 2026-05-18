@@ -32,6 +32,7 @@
 /* AS5600 驱动头文件，提供 I2C 读取角度/状态接口。 */
 #include "as5600.h"
 #include "motor_driver.h"
+#include "motor_ui.h"
 
 /* USER CODE END Includes */
 
@@ -274,6 +275,7 @@ int main(void)
   printf("printf test\r\n");
 
   MotorDriver_Init();
+  MotorUi_Init();
 
   /* STM32F1 的 ADC 在使用前建议校准，可减小转换偏差。 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
@@ -305,6 +307,7 @@ int main(void)
     /* 每轮主循环都检查一次串口命令，无需用 HAL_Delay 阻塞等待串口数据。 */
     MotorTest_HandleUartCommand(now);
     MotorTest_Update(now);
+    MotorUi_Update(now);
 
     /* 每 500ms 翻转 LED，作为“程序仍在运行”的心跳指示。 */
     if ((now - g_led_tick) >= 500U)
