@@ -46,6 +46,8 @@
 /* USER CODE BEGIN PD */
 #define MOTOR_TEST_DURATION_MS 3000U
 #define MOTOR_TEST_STEP_MS     20U
+#define ENABLE_PERIODIC_SERIAL_PRINT 0U
+#define SERIAL_PRINT_PERIOD_MS 1000U
 
 /* USER CODE END PD */
 
@@ -317,8 +319,9 @@ int main(void)
       g_led_tick = now;
     }
 
-    /* 每 200ms 打印一次 ADC 与 I2C 角度对比。 */
-    if ((now - g_print_tick) >= 200U)
+#if ENABLE_PERIODIC_SERIAL_PRINT
+    /* 串口周期打印可开关，默认关闭以降低阻塞对触摸调试的影响。 */
+    if ((now - g_print_tick) >= SERIAL_PRINT_PERIOD_MS)
     {
       uint16_t adc_raw = 0U;
       uint16_t i2c_raw = 0U;
@@ -365,6 +368,7 @@ int main(void)
 
       g_print_tick = now;
     }
+#endif
   }
   /* USER CODE END 3 */
 }
