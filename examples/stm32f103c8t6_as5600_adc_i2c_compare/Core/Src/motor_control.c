@@ -5,7 +5,7 @@
 #define MOTOR_DUTY_MIN          0.10f
 #define MOTOR_DUTY_MAX          0.60f
 #define MOTOR_DUTY_DEFAULT      0.20f
-#define MOTOR_PATTERN_PERIOD_MS 120U
+#define MOTOR_PATTERN_PERIOD_MS 20U
 
 static uint8_t g_running = 0U;
 static float g_duty = MOTOR_DUTY_DEFAULT;
@@ -25,16 +25,37 @@ static float MotorControl_ClampDuty(float duty)
   return duty;
 }
 
+static const float kMotorPatternTable[6][3] = {
+  {0.60f, 0.40f, 0.50f},
+  {0.60f, 0.50f, 0.40f},
+  {0.50f, 0.60f, 0.40f},
+  {0.40f, 0.60f, 0.50f},
+  {0.40f, 0.50f, 0.60f},
+  {0.50f, 0.40f, 0.60f},
+};
+
+static float MotorControl_ClampPhaseDuty(float duty)
+{
+  if (duty < 0.0f)
+  {
+    return 0.0f;
+  }
+  if (duty > 1.0f)
+  {
+    return 1.0f;
+  }
+  return duty;
+}
+
 static void MotorControl_ApplyPatternStep(void)
 {
-  const float d = g_duty;
-  switch (g_comm_step)
-  {
-    case 0U: MotorDriver_SetPwmDuty(d, 0.0f, 0.0f); break;
-    case 1U: MotorDriver_SetPwmDuty(0.0f, d, 0.0f); break;
-    default: MotorDriver_SetPwmDuty(0.0f, 0.0f, d); break;
-  }
-  g_comm_step = (uint8_t)((g_comm_step + 1U) % 3U);
+  const float gain = g_duty / MOTOR_DUTY_DEFAULT;
+  const float du = MotorControl_ClampPhaseDuty(kMotorPatternTable[g_comm_step][0] * gain);
+  const float dv = MotorControl_ClampPhaseDuty(kMotorPatternTable[g_comm_step][1] * gain);
+  const float dw = MotorControl_ClampPhaseDuty(kMotorPatternTable[g_comm_step][2] * gain);
+
+  MotorDriver_SetPwmDuty(du, dv, dw);
+  g_comm_step = (uint8_t)((g_comm_step + 1U) % 6U);
 }
 
 void MotorControl_Init(void)
