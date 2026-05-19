@@ -53,7 +53,8 @@ static UiButton g_btn_spd_minus = {20, 120, 90, 48, "SPD-", C_BTN};
 static UiButton g_btn_spd_plus = {130, 120, 90, 48, "SPD+", C_BTN};
 static UiButton g_btn_duty_minus = {20, 190, 90, 48, "DUTY-", C_BTN};
 static UiButton g_btn_duty_plus = {130, 190, 90, 48, "DUTY+", C_BTN};
-static UiButton g_btn_back = {75, 260, 90, 40, "BACK", C_BTN};
+static UiButton g_btn_mode = {20, 260, 90, 40, "MODE", C_BTN};
+static UiButton g_btn_back = {130, 260, 90, 40, "BACK", C_BTN};
 static UiButton g_btn_yes = {30, 180, 80, 44, "YES", C_BTN};
 static UiButton g_btn_no = {130, 180, 80, 44, "NO", C_STOP};
 
@@ -107,7 +108,8 @@ static uint8_t Ui_ButtonId(uint16_t x, uint16_t y)
     if (Ui_Hit(&g_btn_spd_plus, x, y)) return 13U;
     if (Ui_Hit(&g_btn_duty_minus, x, y)) return 14U;
     if (Ui_Hit(&g_btn_duty_plus, x, y)) return 15U;
-    if (Ui_Hit(&g_btn_back, x, y)) return 16U;
+    if (Ui_Hit(&g_btn_mode, x, y)) return 16U;
+    if (Ui_Hit(&g_btn_back, x, y)) return 17U;
   }
   return 0U;
 }
@@ -158,6 +160,7 @@ static void Ui_DrawSetScreen(void)
   Ui_DrawButton(&g_btn_spd_plus);
   Ui_DrawButton(&g_btn_duty_minus);
   Ui_DrawButton(&g_btn_duty_plus);
+  Ui_DrawButton(&g_btn_mode);
   Ui_DrawButton(&g_btn_back);
 }
 
@@ -167,14 +170,26 @@ static void Ui_DrawSetStatus(void)
 
   LCD_FillRect(10U, 40U, 220U, 60U, C_BG);
 
-  snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
-           (unsigned int)MotorControl_GetSpeedLevel(),
-           (unsigned int)MotorControl_GetTargetPeriodMs(),
-           (unsigned int)MotorControl_GetCurrentPeriodMs());
+  if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
+  {
+    int32_t tr = MotorControl_GetTargetRpmX10();
+    snprintf(line, sizeof(line), "Tgt: %ld.%ldrpm", (long)(tr / 10), (long)(tr % 10));
+  }
+  else
+  {
+    snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
+             (unsigned int)MotorControl_GetSpeedLevel(),
+             (unsigned int)MotorControl_GetTargetPeriodMs(),
+             (unsigned int)MotorControl_GetCurrentPeriodMs());
+  }
   LCD_DrawText(10U, 48U, line, C_FG, C_BG);
 
-  snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
+  snprintf(line, sizeof(line), "Mode: %s",
+           MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "CLSPD" : "OPEN");
   LCD_DrawText(10U, 72U, line, C_FG, C_BG);
+
+  snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
+  LCD_DrawText(10U, 96U, line, C_FG, C_BG);
 }
 
 static void Ui_DrawConfirmScreen(void)
@@ -193,17 +208,27 @@ static void Ui_DrawStatus(void)
   LCD_FillRect(10U, 34U, 220U, 132U, C_BG);
   LCD_DrawText(10U, 36U, "State:", C_FG, C_BG);
   LCD_DrawText(82U, 36U,
-               MotorControl_IsRunning() ? "RUN" : "STOP",
+               MotorControl_IsRunning()
+                 ? (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "RUN CL" : "RUN OPEN")
+                 : (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "STOP CL" : "STOP OPEN"),
                MotorControl_IsRunning() ? C_BTN : C_STOP,
                C_BG);
 
   LCD_DrawText(10U, 60U, "Dir:", C_FG, C_BG);
   LCD_DrawText(82U, 60U, MotorControl_GetDirection() == MOTOR_DIR_FWD ? "FWD" : "REV", C_FG, C_BG);
 
-  snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
-           (unsigned int)MotorControl_GetSpeedLevel(),
-           (unsigned int)MotorControl_GetTargetPeriodMs(),
-           (unsigned int)MotorControl_GetCurrentPeriodMs());
+  if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
+  {
+    int32_t tr = MotorControl_GetTargetRpmX10();
+    snprintf(line, sizeof(line), "Tgt: %ld.%ldrpm", (long)(tr / 10), (long)(tr % 10));
+  }
+  else
+  {
+    snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
+             (unsigned int)MotorControl_GetSpeedLevel(),
+             (unsigned int)MotorControl_GetTargetPeriodMs(),
+             (unsigned int)MotorControl_GetCurrentPeriodMs());
+  }
   LCD_DrawText(10U, 84U, line, C_FG, C_BG);
 
   snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
@@ -575,11 +600,16 @@ static void Ui_HandleSetTouch(uint32_t now)
       if ((g_touch_latch == 0U) && (hit != 0U))
       {
         g_touch_latch = 1U;
-        if (hit == 11U || hit == 16U)
+        if (hit == 11U || hit == 17U)
         {
           g_ui_mode = UI_MODE_MAIN;
           Ui_DrawMainScreen();
           Ui_DrawStatus();
+        }
+        else if (hit == 16U)
+        {
+          MotorControl_ToggleMode();
+          Ui_DrawSetStatus();
         }
         else if (hit == 12U)
         {

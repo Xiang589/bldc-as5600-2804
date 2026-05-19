@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "motor_driver.h"
+#include "motor_feedback.h"
 
 #define MOTOR_DUTY_MIN               0.10f
 #define MOTOR_DUTY_MAX               0.60f
@@ -22,8 +23,17 @@
 #define MOTOR_PHASE_FRAC_BITS        16U
 #define MOTOR_PHASE_SCALE            (1UL << MOTOR_PHASE_FRAC_BITS)
 #define MOTOR_PHASE_FULL             (MOTOR_LUT_SIZE * MOTOR_PHASE_SCALE)
+#define MOTOR_CL_PERIOD_MS            100U
+#define MOTOR_CL_KP_NUM               1
+#define MOTOR_CL_KP_DEN               20
+#define MOTOR_CL_KI_NUM               1
+#define MOTOR_CL_KI_DEN               200
+#define MOTOR_CL_PERIOD_MIN_MS        8U
+#define MOTOR_CL_PERIOD_MAX_MS        120U
+#define MOTOR_CL_FEEDBACK_TIMEOUT_MS  500U
 
 static const uint16_t kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MAX] = {80U, 50U, 30U, 20U, 15U, 10U};
+static const int32_t kTargetRpmX10[MOTOR_SPEED_LEVEL_MAX] = {50, 100, 200, 300, 450, 600};
 
 static const int16_t kSineLut[MOTOR_LUT_SIZE] = {
        0,    804,   1608,   2410,   3212,   4011,   4808,   5602,
@@ -70,6 +80,10 @@ static uint32_t g_phase_q16 = 0U;
 static uint32_t g_last_update_tick = 0U;
 static uint32_t g_last_ramp_tick = 0U;
 static MotorControlMode_t g_mode = MOTOR_MODE_OPEN_LOOP;
+static int32_t g_cl_integrator = 0;
+static uint32_t g_last_cl_tick = 0U;
+static uint16_t g_cl_period_ms = 80U;
+static uint32_t g_feedback_lost_tick = 0U;
 
 static float MotorControl_ClampDuty(float duty)
 {
@@ -127,6 +141,10 @@ void MotorControl_Init(void)
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
   g_mode = MOTOR_MODE_OPEN_LOOP;
+  g_cl_integrator = 0;
+  g_last_cl_tick = g_last_update_tick;
+  g_cl_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
+  g_feedback_lost_tick = 0U;
 
   MotorDriver_SetAllPwmZero();
   MotorDriver_Disable();
@@ -136,14 +154,22 @@ void MotorControl_Start(void)
 {
   if (g_running != 0U) return;
 
+  if ((g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP) && (MotorFeedback_IsAngleValid() == 0U))
+  {
+    return;
+  }
+
   g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
+  g_cl_period_ms = g_current_period_ms;
+  g_cl_integrator = 0;
   g_phase_q16 = 0U;
   MotorDriver_SetAllPwmZero();
   MotorDriver_Enable();
   g_running = 1U;
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
-  g_mode = MOTOR_MODE_OPEN_LOOP;
+  g_last_cl_tick = g_last_update_tick;
+  g_feedback_lost_tick = 0U;
   MotorControl_ApplyOpenLoopPwm();
 }
 
@@ -153,9 +179,12 @@ void MotorControl_Stop(void)
   MotorDriver_Disable();
   g_running = 0U;
   g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
+  g_cl_period_ms = g_current_period_ms;
+  g_cl_integrator = 0;
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
-  g_mode = MOTOR_MODE_OPEN_LOOP;
+  g_last_cl_tick = g_last_update_tick;
+  g_feedback_lost_tick = 0U;
 }
 
 void MotorControl_Update(uint32_t now)
@@ -164,27 +193,55 @@ void MotorControl_Update(uint32_t now)
 
   if (g_running == 0U) return;
 
-  if ((now - g_last_ramp_tick) >= MOTOR_RAMP_PERIOD_MS)
-  {
-    if (g_current_period_ms > g_target_period_ms)
-    {
-      g_current_period_ms--;
-    }
-    else if (g_current_period_ms < g_target_period_ms)
-    {
-      g_current_period_ms++;
-    }
-    g_last_ramp_tick = now;
-  }
-
   dt_ms = now - g_last_update_tick;
-  if (dt_ms == 0U)
+  if (dt_ms == 0U) return;
+  if (dt_ms > MOTOR_UPDATE_DT_MAX_MS) dt_ms = MOTOR_UPDATE_DT_MAX_MS;
+
+  if (g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
-    return;
+    if (MotorFeedback_IsSpeedValid() == 0U)
+    {
+      if (g_feedback_lost_tick == 0U) g_feedback_lost_tick = now;
+      else if ((now - g_feedback_lost_tick) >= MOTOR_CL_FEEDBACK_TIMEOUT_MS)
+      {
+        MotorControl_Stop();
+        return;
+      }
+    }
+    else
+    {
+      g_feedback_lost_tick = 0U;
+      if ((now - g_last_cl_tick) >= MOTOR_CL_PERIOD_MS)
+      {
+        int32_t target = kTargetRpmX10[g_target_speed_level - 1U];
+        int32_t actual = MotorFeedback_GetRpmX10();
+        int32_t err;
+        int32_t adjust;
+        int32_t np;
+        if (actual < 0) actual = -actual;
+        err = target - actual;
+        g_cl_integrator += err;
+        if (g_cl_integrator > 5000) g_cl_integrator = 5000;
+        if (g_cl_integrator < -5000) g_cl_integrator = -5000;
+        adjust = (err * MOTOR_CL_KP_NUM) / MOTOR_CL_KP_DEN +
+                 (g_cl_integrator * MOTOR_CL_KI_NUM) / MOTOR_CL_KI_DEN;
+        np = (int32_t)g_target_period_ms - adjust;
+        if (np < (int32_t)MOTOR_CL_PERIOD_MIN_MS) np = MOTOR_CL_PERIOD_MIN_MS;
+        if (np > (int32_t)MOTOR_CL_PERIOD_MAX_MS) np = MOTOR_CL_PERIOD_MAX_MS;
+        g_cl_period_ms = (uint16_t)np;
+        g_current_period_ms = g_cl_period_ms;
+        g_last_cl_tick = now;
+      }
+    }
   }
-  if (dt_ms > MOTOR_UPDATE_DT_MAX_MS)
+  else
   {
-    dt_ms = MOTOR_UPDATE_DT_MAX_MS;
+    if ((now - g_last_ramp_tick) >= MOTOR_RAMP_PERIOD_MS)
+    {
+      if (g_current_period_ms > g_target_period_ms) g_current_period_ms--;
+      else if (g_current_period_ms < g_target_period_ms) g_current_period_ms++;
+      g_last_ramp_tick = now;
+    }
   }
 
   {
@@ -192,22 +249,13 @@ void MotorControl_Update(uint32_t now)
     if (g_direction == MOTOR_DIR_FWD)
     {
       g_phase_q16 += delta_q16;
-      while (g_phase_q16 >= MOTOR_PHASE_FULL)
-      {
-        g_phase_q16 -= MOTOR_PHASE_FULL;
-      }
+      while (g_phase_q16 >= MOTOR_PHASE_FULL) g_phase_q16 -= MOTOR_PHASE_FULL;
     }
     else
     {
       delta_q16 %= MOTOR_PHASE_FULL;
-      if (g_phase_q16 >= delta_q16)
-      {
-        g_phase_q16 -= delta_q16;
-      }
-      else
-      {
-        g_phase_q16 = MOTOR_PHASE_FULL - (delta_q16 - g_phase_q16);
-      }
+      if (g_phase_q16 >= delta_q16) g_phase_q16 -= delta_q16;
+      else g_phase_q16 = MOTOR_PHASE_FULL - (delta_q16 - g_phase_q16);
     }
   }
 
@@ -260,12 +308,34 @@ uint8_t MotorControl_GetPhaseIndex(void)
 
 void MotorControl_SetMode(MotorControlMode_t mode)
 {
-  (void)mode;
-  /* Closed-loop modes are reserved for future PRs. */
-  g_mode = MOTOR_MODE_OPEN_LOOP;
+  if (mode != MOTOR_MODE_SPEED_CLOSED_LOOP)
+  {
+    mode = MOTOR_MODE_OPEN_LOOP;
+  }
+
+  if ((g_running != 0U) && (mode != g_mode))
+  {
+    MotorControl_Stop();
+  }
+
+  g_mode = mode;
+}
+
+void MotorControl_ToggleMode(void)
+{
+  if (g_mode == MOTOR_MODE_OPEN_LOOP)
+  {
+    MotorControl_SetMode(MOTOR_MODE_SPEED_CLOSED_LOOP);
+  }
+  else
+  {
+    MotorControl_SetMode(MOTOR_MODE_OPEN_LOOP);
+  }
 }
 
 MotorControlMode_t MotorControl_GetMode(void)
 {
   return g_mode;
 }
+
+int32_t MotorControl_GetTargetRpmX10(void) { return kTargetRpmX10[g_target_speed_level - 1U]; }

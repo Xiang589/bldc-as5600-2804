@@ -45,6 +45,8 @@ void MotorControl_DutyDown(void);
 
 void MotorControl_SetMode(MotorControlMode_t mode);
 MotorControlMode_t MotorControl_GetMode(void);
+void MotorControl_ToggleMode(void);
+int32_t MotorControl_GetTargetRpmX10(void);
 
 #ifdef __cplusplus
 }
