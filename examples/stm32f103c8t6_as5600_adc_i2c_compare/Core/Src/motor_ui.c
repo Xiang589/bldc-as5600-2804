@@ -82,6 +82,8 @@ static CalPoint g_cal_points[5] = {
 };
 static uint8_t g_cal_index = 0U;
 
+static void Ui_DrawSetStatus(void);
+
 static uint8_t Ui_Hit(const UiButton *b, uint16_t x, uint16_t y)
 {
   return (x >= b->x) && (x < (b->x + b->w)) && (y >= b->y) && (y < (b->y + b->h));
