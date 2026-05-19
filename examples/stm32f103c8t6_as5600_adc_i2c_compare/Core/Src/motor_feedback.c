@@ -3,6 +3,7 @@
 #include "as5600.h"
 #include "i2c.h"
 
+#define MOTOR_FEEDBACK_ANGLE_PERIOD_MS 20U
 #define MOTOR_FEEDBACK_SPEED_PERIOD_MS 200U
 
 static uint8_t g_angle_valid = 0U;
@@ -15,6 +16,7 @@ static int32_t g_delta_raw = 0;
 static int32_t g_total_raw_turns = 0;
 static uint16_t g_prev_raw = 0U;
 static uint32_t g_prev_tick = 0U;
+static uint32_t g_last_angle_tick = 0U;
 
 void MotorFeedback_Init(void)
 {
@@ -28,11 +30,17 @@ void MotorFeedback_Init(void)
   g_total_raw_turns = 0;
   g_prev_raw = 0U;
   g_prev_tick = HAL_GetTick();
+  g_last_angle_tick = g_prev_tick;
 }
 
 void MotorFeedback_Update(uint32_t now)
 {
   uint16_t raw = 0U;
+
+  if ((now - g_last_angle_tick) < MOTOR_FEEDBACK_ANGLE_PERIOD_MS)
+  {
+    return;
+  }
 
   if (AS5600_ReadRawAngle(&hi2c1, &raw) != HAL_OK)
   {
@@ -43,6 +51,7 @@ void MotorFeedback_Update(uint32_t now)
     return;
   }
 
+  g_last_angle_tick = now;
   g_raw_angle = raw;
   g_angle_x100 = ((int32_t)raw * 36000) / 4096;
   g_angle_valid = 1U;

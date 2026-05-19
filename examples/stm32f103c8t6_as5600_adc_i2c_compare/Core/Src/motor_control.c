@@ -33,7 +33,14 @@
 #define MOTOR_CL_FEEDBACK_TIMEOUT_MS  500U
 #define MOTOR_CL_STARTUP_GRACE_MS    2000U
 
-static const uint16_t kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MAX] = {80U, 50U, 30U, 20U, 15U, 10U};
+static const uint16_t kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MAX] = {
+  300U,
+  200U,
+  120U,
+  80U,
+  50U,
+  30U
+};
 static const int32_t kTargetRpmX10[MOTOR_SPEED_LEVEL_MAX] = {50, 100, 200, 300, 450, 600};
 
 static const int16_t kSineLut[MOTOR_LUT_SIZE] = {
