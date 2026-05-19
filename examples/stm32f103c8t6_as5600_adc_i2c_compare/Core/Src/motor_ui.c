@@ -168,7 +168,7 @@ static void Ui_DrawSetStatus(void)
 {
   char line[32];
 
-  LCD_FillRect(10U, 40U, 220U, 60U, C_BG);
+  LCD_FillRect(10U, 40U, 220U, 76U, C_BG);
 
   if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
@@ -203,7 +203,6 @@ static void Ui_DrawConfirmScreen(void)
 static void Ui_DrawStatus(void)
 {
   char line[32];
-  char touch_line[32];
 
   LCD_FillRect(10U, 34U, 220U, 132U, C_BG);
   LCD_DrawText(10U, 36U, "State:", C_FG, C_BG);
@@ -262,22 +261,6 @@ static void Ui_DrawStatus(void)
   }
   LCD_DrawText(10U, 156U, line, C_FG, C_BG);
 
-  if (g_touch_pen == 0U)
-  {
-    snprintf(touch_line, sizeof(touch_line), "Touch: ---");
-  }
-  else if (g_touch_has_xy == 0U)
-  {
-    snprintf(touch_line, sizeof(touch_line), "Touch: PEN");
-  }
-  else
-  {
-    snprintf(touch_line, sizeof(touch_line), "Touch: %u,%u", g_touch_x, g_touch_y);
-  }
-  if (g_ui_mode == UI_MODE_MAIN)
-  {
-    (void)touch_line;
-  }
 }
 
 static TouchCalibration_t Cal_Build(void)
