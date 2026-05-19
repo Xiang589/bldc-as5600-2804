@@ -237,11 +237,6 @@ static void MotorTest_HandleUartCommand(uint32_t now)
 }
 
 
-void HAL_SYSTICK_Callback(void)
-{
-  MotorControl_Tick1ms();
-}
-
 /* USER CODE END 0 */
 
 /**
