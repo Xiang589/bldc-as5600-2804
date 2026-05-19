@@ -287,15 +287,12 @@ void MotorControl_Update(uint32_t now)
 
 void MotorControl_Tick1ms(void)
 {
-  static uint32_t s_tick = 0U;
-
   if (g_control_ready == 0U)
   {
     return;
   }
 
-  s_tick++;
-  MotorControl_Update(s_tick);
+  MotorControl_Update(HAL_GetTick());
 }
 
 uint8_t MotorControl_IsRunning(void) { return g_running; }
