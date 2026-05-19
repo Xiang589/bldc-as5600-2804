@@ -69,6 +69,7 @@ static uint16_t g_current_period_ms = 80U;
 static uint32_t g_phase_q16 = 0U;
 static uint32_t g_last_update_tick = 0U;
 static uint32_t g_last_ramp_tick = 0U;
+static MotorControlMode_t g_mode = MOTOR_MODE_OPEN_LOOP;
 
 static float MotorControl_ClampDuty(float duty)
 {
@@ -125,6 +126,7 @@ void MotorControl_Init(void)
   g_phase_q16 = 0U;
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
+  g_mode = MOTOR_MODE_OPEN_LOOP;
 
   MotorDriver_SetAllPwmZero();
   MotorDriver_Disable();
@@ -141,6 +143,7 @@ void MotorControl_Start(void)
   g_running = 1U;
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
+  g_mode = MOTOR_MODE_OPEN_LOOP;
   MotorControl_ApplyOpenLoopPwm();
 }
 
@@ -152,6 +155,7 @@ void MotorControl_Stop(void)
   g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
+  g_mode = MOTOR_MODE_OPEN_LOOP;
 }
 
 void MotorControl_Update(uint32_t now)
@@ -245,3 +249,23 @@ void MotorControl_SetDuty(float duty) { g_duty = MotorControl_ClampDuty(duty); }
 float MotorControl_GetDuty(void) { return g_duty; }
 void MotorControl_DutyUp(void) { MotorControl_SetDuty(g_duty + MOTOR_DUTY_STEP); }
 void MotorControl_DutyDown(void) { MotorControl_SetDuty(g_duty - MOTOR_DUTY_STEP); }
+
+uint16_t MotorControl_GetTargetPeriodMs(void) { return g_target_period_ms; }
+uint16_t MotorControl_GetCurrentPeriodMs(void) { return g_current_period_ms; }
+uint32_t MotorControl_GetPhaseQ16(void) { return g_phase_q16; }
+uint8_t MotorControl_GetPhaseIndex(void)
+{
+  return (uint8_t)((g_phase_q16 >> MOTOR_PHASE_FRAC_BITS) & 0xFFU);
+}
+
+void MotorControl_SetMode(MotorControlMode_t mode)
+{
+  (void)mode;
+  /* Closed-loop modes are reserved for future PRs. */
+  g_mode = MOTOR_MODE_OPEN_LOOP;
+}
+
+MotorControlMode_t MotorControl_GetMode(void)
+{
+  return g_mode;
+}

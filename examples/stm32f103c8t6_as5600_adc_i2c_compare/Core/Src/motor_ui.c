@@ -2,8 +2,7 @@
 
 #include <stdio.h>
 
-#include "as5600.h"
-#include "i2c.h"
+#include "motor_feedback.h"
 #include "lcd_ili9341.h"
 #include "motor_control.h"
 #include "touch_cal_storage.h"
@@ -18,7 +17,6 @@
 #define C_CAL 0x001FU
 #define TOUCH_SAMPLE_PERIOD_MS 25U
 #define UI_STATUS_PERIOD_MS 500U
-#define UI_RPM_PERIOD_MS    200U
 
 typedef struct {
   uint16_t x;
@@ -82,14 +80,8 @@ static CalPoint g_cal_points[5] = {
   {"CT", 120, 160, 0, 0},
 };
 static uint8_t g_cal_index = 0U;
-static uint8_t g_rpm_valid = 0U;
-static uint8_t g_rpm_has_prev = 0U;
-static int32_t g_rpm_x10 = 0;
-static uint16_t g_rpm_prev_raw = 0U;
-static uint32_t g_rpm_prev_tick = 0U;
 
 static void Ui_DrawSetStatus(void);
-static void Ui_UpdateRpmEstimate(uint32_t now);
 
 static uint8_t Ui_Hit(const UiButton *b, uint16_t x, uint16_t y)
 {
@@ -175,9 +167,10 @@ static void Ui_DrawSetStatus(void)
 
   LCD_FillRect(10U, 40U, 220U, 60U, C_BG);
 
-  snprintf(line, sizeof(line), "Speed: L%u %ums",
+  snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
            (unsigned int)MotorControl_GetSpeedLevel(),
-           (unsigned int)MotorControl_GetStepPeriodMs());
+           (unsigned int)MotorControl_GetTargetPeriodMs(),
+           (unsigned int)MotorControl_GetCurrentPeriodMs());
   LCD_DrawText(10U, 48U, line, C_FG, C_BG);
 
   snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
@@ -196,7 +189,6 @@ static void Ui_DrawStatus(void)
 {
   char line[32];
   char touch_line[32];
-  uint16_t raw = 0U;
 
   LCD_FillRect(10U, 34U, 220U, 132U, C_BG);
   LCD_DrawText(10U, 36U, "State:", C_FG, C_BG);
@@ -208,18 +200,18 @@ static void Ui_DrawStatus(void)
   LCD_DrawText(10U, 60U, "Dir:", C_FG, C_BG);
   LCD_DrawText(82U, 60U, MotorControl_GetDirection() == MOTOR_DIR_FWD ? "FWD" : "REV", C_FG, C_BG);
 
-  snprintf(line, sizeof(line), "Speed: L%u %ums",
+  snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
            (unsigned int)MotorControl_GetSpeedLevel(),
-           (unsigned int)MotorControl_GetStepPeriodMs());
+           (unsigned int)MotorControl_GetTargetPeriodMs(),
+           (unsigned int)MotorControl_GetCurrentPeriodMs());
   LCD_DrawText(10U, 84U, line, C_FG, C_BG);
 
   snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
   LCD_DrawText(10U, 108U, line, C_FG, C_BG);
 
-  if (AS5600_ReadRawAngle(&hi2c1, &raw) == HAL_OK)
+  if (MotorFeedback_IsAngleValid() != 0U)
   {
-    float angle = AS5600_RawToDegree(raw);
-    int32_t angle_x100 = (int32_t)(angle * 100.0f);
+    int32_t angle_x100 = MotorFeedback_GetAngleX100();
     snprintf(line, sizeof(line), "Angle: %ld.%02ld",
              (long)(angle_x100 / 100), (long)(angle_x100 % 100));
   }
@@ -229,12 +221,13 @@ static void Ui_DrawStatus(void)
   }
   LCD_DrawText(10U, 132U, line, C_FG, C_BG);
 
-  if (g_rpm_valid != 0U)
+  if (MotorFeedback_IsSpeedValid() != 0U)
   {
-    int32_t rpm_abs = g_rpm_x10;
+    int32_t rpm_x10 = MotorFeedback_GetRpmX10();
+    int32_t rpm_abs = rpm_x10;
     if (rpm_abs < 0) rpm_abs = -rpm_abs;
     snprintf(line, sizeof(line), "RPM: %s%ld.%ld",
-             (g_rpm_x10 < 0) ? "-" : "",
+             (rpm_x10 < 0) ? "-" : "",
              (long)(rpm_abs / 10),
              (long)(rpm_abs % 10));
   }
@@ -260,56 +253,6 @@ static void Ui_DrawStatus(void)
   {
     (void)touch_line;
   }
-}
-
-static void Ui_UpdateRpmEstimate(uint32_t now)
-{
-  uint16_t raw = 0U;
-
-  if ((now - g_rpm_prev_tick) < UI_RPM_PERIOD_MS)
-  {
-    return;
-  }
-
-  if (AS5600_ReadRawAngle(&hi2c1, &raw) != HAL_OK)
-  {
-    g_rpm_valid = 0U;
-    g_rpm_has_prev = 0U;
-    g_rpm_prev_tick = now;
-    return;
-  }
-
-  if (g_rpm_has_prev == 0U)
-  {
-    g_rpm_prev_raw = raw;
-    g_rpm_prev_tick = now;
-    g_rpm_has_prev = 1U;
-    g_rpm_valid = 0U;
-    return;
-  }
-
-  {
-    int32_t delta_raw = (int32_t)raw - (int32_t)g_rpm_prev_raw;
-    uint32_t dt_ms = now - g_rpm_prev_tick;
-    if (delta_raw > 2048)
-    {
-      delta_raw -= 4096;
-    }
-    else if (delta_raw < -2048)
-    {
-      delta_raw += 4096;
-    }
-
-    if (dt_ms > 0U)
-    {
-      int64_t rpm_x10 = ((int64_t)delta_raw * 600000LL) / (4096LL * (int64_t)dt_ms);
-      g_rpm_x10 = (int32_t)rpm_x10;
-      g_rpm_valid = 1U;
-    }
-  }
-
-  g_rpm_prev_raw = raw;
-  g_rpm_prev_tick = now;
 }
 
 static TouchCalibration_t Cal_Build(void)
@@ -675,11 +618,7 @@ void MotorUi_Init(void)
   LCD_Init();
   LCD_SetBacklight(1U);
   Touch_Init();
-  g_rpm_valid = 0U;
-  g_rpm_has_prev = 0U;
-  g_rpm_x10 = 0;
-  g_rpm_prev_raw = 0U;
-  g_rpm_prev_tick = HAL_GetTick();
+  MotorFeedback_Init();
 
   if (TouchCalStorage_Load(&cal) != 0U)
   {
@@ -707,7 +646,7 @@ void MotorUi_Init(void)
 
 void MotorUi_Update(uint32_t now)
 {
-  Ui_UpdateRpmEstimate(now);
+  MotorFeedback_Update(now);
 
   if (g_ui_mode == UI_MODE_CAL_DONE)
   {
