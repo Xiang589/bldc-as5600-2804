@@ -152,11 +152,27 @@ static void Ui_DrawSetScreen(void)
   LCD_DrawText(10U, 8U, "OPEN LOOP SET", C_FG, C_BG);
   LCD_DrawRect(4U, 4U, 232U, 24U, C_FG);
   Ui_DrawButton(&g_btn_back_top);
+  Ui_DrawSetStatus();
   Ui_DrawButton(&g_btn_spd_minus);
   Ui_DrawButton(&g_btn_spd_plus);
   Ui_DrawButton(&g_btn_duty_minus);
   Ui_DrawButton(&g_btn_duty_plus);
   Ui_DrawButton(&g_btn_back);
+}
+
+static void Ui_DrawSetStatus(void)
+{
+  char line[32];
+
+  LCD_FillRect(10U, 40U, 220U, 60U, C_BG);
+
+  snprintf(line, sizeof(line), "Speed: L%u %ums",
+           (unsigned int)MotorControl_GetSpeedLevel(),
+           (unsigned int)MotorControl_GetStepPeriodMs());
+  LCD_DrawText(10U, 48U, line, C_FG, C_BG);
+
+  snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
+  LCD_DrawText(10U, 72U, line, C_FG, C_BG);
 }
 
 static void Ui_DrawConfirmScreen(void)
@@ -506,7 +522,6 @@ static void Ui_HandleMainTouch(uint32_t now)
         {
           g_ui_mode = UI_MODE_SET;
           Ui_DrawSetScreen();
-          Ui_DrawStatus();
         }
       }
     }
@@ -549,10 +564,26 @@ static void Ui_HandleSetTouch(uint32_t now)
           Ui_DrawMainScreen();
           Ui_DrawStatus();
         }
-        else if (hit == 12U) MotorControl_SpeedDown();
-        else if (hit == 13U) MotorControl_SpeedUp();
-        else if (hit == 14U) MotorControl_DutyDown();
-        else if (hit == 15U) MotorControl_DutyUp();
+        else if (hit == 12U)
+        {
+          MotorControl_SpeedDown();
+          Ui_DrawSetStatus();
+        }
+        else if (hit == 13U)
+        {
+          MotorControl_SpeedUp();
+          Ui_DrawSetStatus();
+        }
+        else if (hit == 14U)
+        {
+          MotorControl_DutyDown();
+          Ui_DrawSetStatus();
+        }
+        else if (hit == 15U)
+        {
+          MotorControl_DutyUp();
+          Ui_DrawSetStatus();
+        }
       }
     }
   }
@@ -630,7 +661,14 @@ void MotorUi_Update(uint32_t now)
   }
   if ((now - g_last_draw) >= UI_STATUS_PERIOD_MS)
   {
-    Ui_DrawStatus();
+    if (g_ui_mode == UI_MODE_SET)
+    {
+      Ui_DrawSetStatus();
+    }
+    else
+    {
+      Ui_DrawStatus();
+    }
     g_last_draw = now;
   }
 }
