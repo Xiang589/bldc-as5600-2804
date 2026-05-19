@@ -302,8 +302,8 @@ static void Ui_UpdateRpmEstimate(uint32_t now)
 
     if (dt_ms > 0U)
     {
-      int32_t rpm_x10 = (delta_raw * 6000) / (4096 * (int32_t)dt_ms);
-      g_rpm_x10 = rpm_x10;
+      int64_t rpm_x10 = ((int64_t)delta_raw * 600000LL) / (4096LL * (int64_t)dt_ms);
+      g_rpm_x10 = (int32_t)rpm_x10;
       g_rpm_valid = 1U;
     }
   }
