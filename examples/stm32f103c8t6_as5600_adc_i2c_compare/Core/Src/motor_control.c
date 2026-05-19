@@ -11,7 +11,7 @@
 #define MOTOR_SPEED_LEVEL_MIN        1U
 #define MOTOR_SPEED_LEVEL_MAX        6U
 #define MOTOR_SPEED_LEVEL_DEFAULT    3U
-#define MOTOR_UPDATE_PERIOD_MS       1U
+#define MOTOR_UPDATE_DT_MAX_MS       20U
 #define MOTOR_RAMP_PERIOD_MS         200U
 #define MOTOR_LUT_SIZE               256U
 #define MOTOR_LUT_PHASE_B_OFFSET     85U
@@ -19,6 +19,9 @@
 #define MOTOR_CENTER_DUTY            0.50f
 #define MOTOR_AMPLITUDE_MIN          0.05f
 #define MOTOR_AMPLITUDE_MAX          0.20f
+#define MOTOR_PHASE_FRAC_BITS        16U
+#define MOTOR_PHASE_SCALE            (1UL << MOTOR_PHASE_FRAC_BITS)
+#define MOTOR_PHASE_FULL             (MOTOR_LUT_SIZE * MOTOR_PHASE_SCALE)
 
 static const uint16_t kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MAX] = {80U, 50U, 30U, 20U, 15U, 10U};
 
@@ -61,8 +64,9 @@ static uint8_t g_running = 0U;
 static float g_duty = MOTOR_DUTY_DEFAULT;
 static MotorDirection_t g_direction = MOTOR_DIR_FWD;
 static uint8_t g_target_speed_level = MOTOR_SPEED_LEVEL_DEFAULT;
-static uint8_t g_current_speed_level = MOTOR_SPEED_LEVEL_MIN;
-static uint8_t g_theta_index = 0U;
+static uint16_t g_target_period_ms = 30U;
+static uint16_t g_current_period_ms = 80U;
+static uint32_t g_phase_q16 = 0U;
 static uint32_t g_last_update_tick = 0U;
 static uint32_t g_last_ramp_tick = 0U;
 
@@ -97,10 +101,11 @@ static float MotorControl_DutyToAmplitude(float duty)
 
 static void MotorControl_ApplyOpenLoopPwm(void)
 {
+  const uint8_t index = (uint8_t)((g_phase_q16 >> MOTOR_PHASE_FRAC_BITS) & 0xFFU);
   const float amplitude = MotorControl_DutyToAmplitude(g_duty);
-  const int16_t sa = kSineLut[g_theta_index];
-  const int16_t sb = kSineLut[(uint8_t)(g_theta_index + MOTOR_LUT_PHASE_B_OFFSET)];
-  const int16_t sc = kSineLut[(uint8_t)(g_theta_index + MOTOR_LUT_PHASE_C_OFFSET)];
+  const int16_t sa = kSineLut[index];
+  const int16_t sb = kSineLut[(uint8_t)(index + MOTOR_LUT_PHASE_B_OFFSET)];
+  const int16_t sc = kSineLut[(uint8_t)(index + MOTOR_LUT_PHASE_C_OFFSET)];
 
   const float du = MotorControl_ClampPhaseDuty(MOTOR_CENTER_DUTY + amplitude * ((float)sa / 32767.0f));
   const float dv = MotorControl_ClampPhaseDuty(MOTOR_CENTER_DUTY + amplitude * ((float)sb / 32767.0f));
@@ -115,8 +120,9 @@ void MotorControl_Init(void)
   g_duty = MOTOR_DUTY_DEFAULT;
   g_direction = MOTOR_DIR_FWD;
   g_target_speed_level = MOTOR_SPEED_LEVEL_DEFAULT;
-  g_current_speed_level = MOTOR_SPEED_LEVEL_MIN;
-  g_theta_index = 0U;
+  g_target_period_ms = kSpeedPeriodMs[g_target_speed_level - 1U];
+  g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
+  g_phase_q16 = 0U;
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
 
@@ -128,8 +134,8 @@ void MotorControl_Start(void)
 {
   if (g_running != 0U) return;
 
-  g_current_speed_level = MOTOR_SPEED_LEVEL_MIN;
-  g_theta_index = 0U;
+  g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
+  g_phase_q16 = 0U;
   MotorDriver_SetAllPwmZero();
   MotorDriver_Enable();
   g_running = 1U;
@@ -143,32 +149,66 @@ void MotorControl_Stop(void)
   MotorDriver_SetAllPwmZero();
   MotorDriver_Disable();
   g_running = 0U;
-  g_current_speed_level = MOTOR_SPEED_LEVEL_MIN;
+  g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
 }
 
 void MotorControl_Update(uint32_t now)
 {
+  uint32_t dt_ms;
+
   if (g_running == 0U) return;
 
   if ((now - g_last_ramp_tick) >= MOTOR_RAMP_PERIOD_MS)
   {
-    if (g_current_speed_level < g_target_speed_level) g_current_speed_level++;
-    else if (g_current_speed_level > g_target_speed_level) g_current_speed_level--;
+    if (g_current_period_ms > g_target_period_ms)
+    {
+      g_current_period_ms--;
+    }
+    else if (g_current_period_ms < g_target_period_ms)
+    {
+      g_current_period_ms++;
+    }
     g_last_ramp_tick = now;
   }
 
-  if ((now - g_last_update_tick) >= MOTOR_UPDATE_PERIOD_MS)
+  dt_ms = now - g_last_update_tick;
+  if (dt_ms == 0U)
   {
-    const uint16_t period = kSpeedPeriodMs[g_current_speed_level - 1U];
-    const uint8_t step = (uint8_t)((MOTOR_LUT_SIZE + (period / 2U)) / period);
-    if (g_direction == MOTOR_DIR_FWD) g_theta_index = (uint8_t)(g_theta_index + step);
-    else g_theta_index = (uint8_t)(g_theta_index - step);
-
-    MotorControl_ApplyOpenLoopPwm();
-    g_last_update_tick = now;
+    return;
   }
+  if (dt_ms > MOTOR_UPDATE_DT_MAX_MS)
+  {
+    dt_ms = MOTOR_UPDATE_DT_MAX_MS;
+  }
+
+  {
+    uint32_t delta_q16 = (uint32_t)(((uint64_t)MOTOR_PHASE_FULL * dt_ms) / g_current_period_ms);
+    if (g_direction == MOTOR_DIR_FWD)
+    {
+      g_phase_q16 += delta_q16;
+      while (g_phase_q16 >= MOTOR_PHASE_FULL)
+      {
+        g_phase_q16 -= MOTOR_PHASE_FULL;
+      }
+    }
+    else
+    {
+      delta_q16 %= MOTOR_PHASE_FULL;
+      if (g_phase_q16 >= delta_q16)
+      {
+        g_phase_q16 -= delta_q16;
+      }
+      else
+      {
+        g_phase_q16 = MOTOR_PHASE_FULL - (delta_q16 - g_phase_q16);
+      }
+    }
+  }
+
+  MotorControl_ApplyOpenLoopPwm();
+  g_last_update_tick = now;
 }
 
 uint8_t MotorControl_IsRunning(void) { return g_running; }
@@ -191,7 +231,11 @@ void MotorControl_ToggleDirection(void)
   g_direction = (g_direction == MOTOR_DIR_FWD) ? MOTOR_DIR_REV : MOTOR_DIR_FWD;
 }
 
-void MotorControl_SetSpeedLevel(uint8_t level) { g_target_speed_level = MotorControl_ClampSpeedLevel(level); }
+void MotorControl_SetSpeedLevel(uint8_t level)
+{
+  g_target_speed_level = MotorControl_ClampSpeedLevel(level);
+  g_target_period_ms = kSpeedPeriodMs[g_target_speed_level - 1U];
+}
 uint8_t MotorControl_GetSpeedLevel(void) { return g_target_speed_level; }
 void MotorControl_SpeedUp(void) { MotorControl_SetSpeedLevel((uint8_t)(g_target_speed_level + 1U)); }
 void MotorControl_SpeedDown(void) { MotorControl_SetSpeedLevel((uint8_t)(g_target_speed_level - 1U)); }
