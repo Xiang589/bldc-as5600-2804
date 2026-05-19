@@ -31,6 +31,7 @@
 #define MOTOR_CL_PERIOD_MIN_MS        8U
 #define MOTOR_CL_PERIOD_MAX_MS        120U
 #define MOTOR_CL_FEEDBACK_TIMEOUT_MS  500U
+#define MOTOR_CL_STARTUP_GRACE_MS    2000U
 
 static const uint16_t kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MAX] = {80U, 50U, 30U, 20U, 15U, 10U};
 static const int32_t kTargetRpmX10[MOTOR_SPEED_LEVEL_MAX] = {50, 100, 200, 300, 450, 600};
@@ -84,6 +85,7 @@ static int32_t g_cl_integrator = 0;
 static uint32_t g_last_cl_tick = 0U;
 static uint16_t g_cl_period_ms = 80U;
 static uint32_t g_feedback_lost_tick = 0U;
+static uint32_t g_start_tick = 0U;
 
 static float MotorControl_ClampDuty(float duty)
 {
@@ -145,6 +147,7 @@ void MotorControl_Init(void)
   g_last_cl_tick = g_last_update_tick;
   g_cl_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
   g_feedback_lost_tick = 0U;
+  g_start_tick = 0U;
 
   MotorDriver_SetAllPwmZero();
   MotorDriver_Disable();
@@ -170,6 +173,7 @@ void MotorControl_Start(void)
   g_last_ramp_tick = g_last_update_tick;
   g_last_cl_tick = g_last_update_tick;
   g_feedback_lost_tick = 0U;
+  g_start_tick = g_last_update_tick;
   MotorControl_ApplyOpenLoopPwm();
 }
 
@@ -185,6 +189,7 @@ void MotorControl_Stop(void)
   g_last_ramp_tick = g_last_update_tick;
   g_last_cl_tick = g_last_update_tick;
   g_feedback_lost_tick = 0U;
+  g_start_tick = g_last_update_tick;
 }
 
 void MotorControl_Update(uint32_t now)
@@ -201,11 +206,18 @@ void MotorControl_Update(uint32_t now)
   {
     if (MotorFeedback_IsSpeedValid() == 0U)
     {
-      if (g_feedback_lost_tick == 0U) g_feedback_lost_tick = now;
-      else if ((now - g_feedback_lost_tick) >= MOTOR_CL_FEEDBACK_TIMEOUT_MS)
+      if ((now - g_start_tick) < MOTOR_CL_STARTUP_GRACE_MS)
       {
-        MotorControl_Stop();
-        return;
+        /* allow startup without valid speed feedback yet */
+      }
+      else
+      {
+        if (g_feedback_lost_tick == 0U) g_feedback_lost_tick = now;
+        else if ((now - g_feedback_lost_tick) >= MOTOR_CL_FEEDBACK_TIMEOUT_MS)
+        {
+          MotorControl_Stop();
+          return;
+        }
       }
     }
     else
