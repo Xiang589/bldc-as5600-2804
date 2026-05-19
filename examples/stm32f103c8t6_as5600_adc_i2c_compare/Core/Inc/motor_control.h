@@ -21,6 +21,7 @@ void MotorControl_Init(void);
 void MotorControl_Start(void);
 void MotorControl_Stop(void);
 void MotorControl_Update(uint32_t now);
+void MotorControl_Tick1ms(void);
 
 uint8_t MotorControl_IsRunning(void);
 

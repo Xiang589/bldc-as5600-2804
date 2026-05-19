@@ -93,6 +93,7 @@ static uint32_t g_last_cl_tick = 0U;
 static uint16_t g_cl_period_ms = 80U;
 static uint32_t g_feedback_lost_tick = 0U;
 static uint32_t g_start_tick = 0U;
+static uint8_t g_control_ready = 0U;
 
 static float MotorControl_ClampDuty(float duty)
 {
@@ -158,6 +159,7 @@ void MotorControl_Init(void)
 
   MotorDriver_SetAllPwmZero();
   MotorDriver_Disable();
+  g_control_ready = 1U;
 }
 
 void MotorControl_Start(void)
@@ -280,6 +282,20 @@ void MotorControl_Update(uint32_t now)
 
   MotorControl_ApplyOpenLoopPwm();
   g_last_update_tick = now;
+}
+
+
+void MotorControl_Tick1ms(void)
+{
+  static uint32_t s_tick = 0U;
+
+  if (g_control_ready == 0U)
+  {
+    return;
+  }
+
+  s_tick++;
+  MotorControl_Update(s_tick);
 }
 
 uint8_t MotorControl_IsRunning(void) { return g_running; }
