@@ -18,6 +18,7 @@
 #define C_CAL 0x001FU
 #define TOUCH_SAMPLE_PERIOD_MS 25U
 #define UI_STATUS_PERIOD_MS 500U
+#define UI_RPM_PERIOD_MS    200U
 
 typedef struct {
   uint16_t x;
@@ -81,8 +82,14 @@ static CalPoint g_cal_points[5] = {
   {"CT", 120, 160, 0, 0},
 };
 static uint8_t g_cal_index = 0U;
+static uint8_t g_rpm_valid = 0U;
+static uint8_t g_rpm_has_prev = 0U;
+static int32_t g_rpm_x10 = 0;
+static uint16_t g_rpm_prev_raw = 0U;
+static uint32_t g_rpm_prev_tick = 0U;
 
 static void Ui_DrawSetStatus(void);
+static void Ui_UpdateRpmEstimate(uint32_t now);
 
 static uint8_t Ui_Hit(const UiButton *b, uint16_t x, uint16_t y)
 {
@@ -222,6 +229,21 @@ static void Ui_DrawStatus(void)
   }
   LCD_DrawText(10U, 132U, line, C_FG, C_BG);
 
+  if (g_rpm_valid != 0U)
+  {
+    int32_t rpm_abs = g_rpm_x10;
+    if (rpm_abs < 0) rpm_abs = -rpm_abs;
+    snprintf(line, sizeof(line), "RPM: %s%ld.%ld",
+             (g_rpm_x10 < 0) ? "-" : "",
+             (long)(rpm_abs / 10),
+             (long)(rpm_abs % 10));
+  }
+  else
+  {
+    snprintf(line, sizeof(line), "RPM: ERR");
+  }
+  LCD_DrawText(10U, 156U, line, C_FG, C_BG);
+
   if (g_touch_pen == 0U)
   {
     snprintf(touch_line, sizeof(touch_line), "Touch: ---");
@@ -236,8 +258,58 @@ static void Ui_DrawStatus(void)
   }
   if (g_ui_mode == UI_MODE_MAIN)
   {
-    LCD_DrawText(10U, 156U, touch_line, C_FG, C_BG);
+    (void)touch_line;
   }
+}
+
+static void Ui_UpdateRpmEstimate(uint32_t now)
+{
+  uint16_t raw = 0U;
+
+  if ((now - g_rpm_prev_tick) < UI_RPM_PERIOD_MS)
+  {
+    return;
+  }
+
+  if (AS5600_ReadRawAngle(&hi2c1, &raw) != HAL_OK)
+  {
+    g_rpm_valid = 0U;
+    g_rpm_has_prev = 0U;
+    g_rpm_prev_tick = now;
+    return;
+  }
+
+  if (g_rpm_has_prev == 0U)
+  {
+    g_rpm_prev_raw = raw;
+    g_rpm_prev_tick = now;
+    g_rpm_has_prev = 1U;
+    g_rpm_valid = 0U;
+    return;
+  }
+
+  {
+    int32_t delta_raw = (int32_t)raw - (int32_t)g_rpm_prev_raw;
+    uint32_t dt_ms = now - g_rpm_prev_tick;
+    if (delta_raw > 2048)
+    {
+      delta_raw -= 4096;
+    }
+    else if (delta_raw < -2048)
+    {
+      delta_raw += 4096;
+    }
+
+    if (dt_ms > 0U)
+    {
+      int32_t rpm_x10 = (delta_raw * 6000) / (4096 * (int32_t)dt_ms);
+      g_rpm_x10 = rpm_x10;
+      g_rpm_valid = 1U;
+    }
+  }
+
+  g_rpm_prev_raw = raw;
+  g_rpm_prev_tick = now;
 }
 
 static TouchCalibration_t Cal_Build(void)
@@ -603,6 +675,11 @@ void MotorUi_Init(void)
   LCD_Init();
   LCD_SetBacklight(1U);
   Touch_Init();
+  g_rpm_valid = 0U;
+  g_rpm_has_prev = 0U;
+  g_rpm_x10 = 0;
+  g_rpm_prev_raw = 0U;
+  g_rpm_prev_tick = HAL_GetTick();
 
   if (TouchCalStorage_Load(&cal) != 0U)
   {
@@ -630,6 +707,8 @@ void MotorUi_Init(void)
 
 void MotorUi_Update(uint32_t now)
 {
+  Ui_UpdateRpmEstimate(now);
+
   if (g_ui_mode == UI_MODE_CAL_DONE)
   {
     if ((now - g_mode_tick) >= 1200U)
