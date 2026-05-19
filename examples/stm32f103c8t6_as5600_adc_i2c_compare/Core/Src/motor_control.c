@@ -176,6 +176,10 @@ uint8_t MotorControl_IsRunning(void) { return g_running; }
 void MotorControl_SetDirection(MotorDirection_t dir)
 {
   if (dir != MOTOR_DIR_REV) dir = MOTOR_DIR_FWD;
+  if ((g_running != 0U) && (dir != g_direction))
+  {
+    MotorControl_Stop();
+  }
   g_direction = dir;
 }
 
