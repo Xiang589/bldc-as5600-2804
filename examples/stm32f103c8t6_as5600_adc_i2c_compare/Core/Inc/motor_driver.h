@@ -18,6 +18,8 @@ void MotorDriver_Disable(void);
 void MotorDriver_SetAllPwmZero(void);
 /* 分别设置 U/V/W 三相占空比，输入建议范围 0.0~1.0。 */
 void MotorDriver_SetPwmDuty(float duty_u, float duty_v, float duty_w);
+/* 分别设置 U/V/W 三相占空比，输入范围 0~10000（万分比）。 */
+void MotorDriver_SetPwmDutyPermyriad(uint16_t duty_u, uint16_t duty_v, uint16_t duty_w);
 
 #ifdef __cplusplus
 }

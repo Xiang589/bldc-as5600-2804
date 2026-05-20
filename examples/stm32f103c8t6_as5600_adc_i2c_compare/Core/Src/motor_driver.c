@@ -14,6 +14,21 @@ enum
   MOTOR_TIM_CH_W = TIM_CHANNEL_3
 };
 
+
+#define MOTOR_DRIVER_DUTY_PERMYRIAD_MAX 10000U
+
+static uint16_t ClampDutyPermyriad(uint16_t duty)
+{
+  return (duty > MOTOR_DRIVER_DUTY_PERMYRIAD_MAX) ? MOTOR_DRIVER_DUTY_PERMYRIAD_MAX : duty;
+}
+
+static void SetPwmCompare(uint32_t ccr_u, uint32_t ccr_v, uint32_t ccr_w)
+{
+  __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_U, ccr_u);
+  __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_V, ccr_v);
+  __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_W, ccr_w);
+}
+
 static float ClampDuty(float duty)
 {
   /* 占空比限幅到 0.0~1.0，避免错误输入导致异常 PWM 输出。 */
@@ -43,9 +58,7 @@ void MotorDriver_SetPwmDuty(float duty_u, float duty_v, float duty_w)
 {
   /* 分别设置 U/V/W 三相 CCR，对应 TIM1 CH1/CH2/CH3。 */
   /* __HAL_TIM_SET_COMPARE 会写入 CCR 寄存器，改变对应通道占空比。 */
-  __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_U, DutyToCompare(duty_u));
-  __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_V, DutyToCompare(duty_v));
-  __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_W, DutyToCompare(duty_w));
+  SetPwmCompare(DutyToCompare(duty_u), DutyToCompare(duty_v), DutyToCompare(duty_w));
 }
 
 void MotorDriver_SetAllPwmZero(void)
@@ -84,4 +97,14 @@ void MotorDriver_Init(void)
 
   /* 再次清零占空比，确保初始化结束时仍处于安全输出。 */
   MotorDriver_SetAllPwmZero();
+}
+
+void MotorDriver_SetPwmDutyPermyriad(uint16_t duty_u, uint16_t duty_v, uint16_t duty_w)
+{
+  const uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim1);
+  const uint32_t ccr_u = ((uint32_t)ClampDutyPermyriad(duty_u) * arr) / MOTOR_DRIVER_DUTY_PERMYRIAD_MAX;
+  const uint32_t ccr_v = ((uint32_t)ClampDutyPermyriad(duty_v) * arr) / MOTOR_DRIVER_DUTY_PERMYRIAD_MAX;
+  const uint32_t ccr_w = ((uint32_t)ClampDutyPermyriad(duty_w) * arr) / MOTOR_DRIVER_DUTY_PERMYRIAD_MAX;
+
+  SetPwmCompare(ccr_u, ccr_v, ccr_w);
 }

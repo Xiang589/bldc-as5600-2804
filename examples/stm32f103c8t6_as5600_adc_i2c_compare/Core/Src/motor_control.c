@@ -9,6 +9,7 @@
 
 static uint8_t g_running = 0U;
 static float g_duty = MOTOR_DUTY_DEFAULT;
+static uint16_t g_duty_permyriad = 2000U;
 static uint8_t g_comm_step = 0U;
 static uint32_t g_last_step_tick = 0U;
 
@@ -25,14 +26,21 @@ static float MotorControl_ClampDuty(float duty)
   return duty;
 }
 
+
+static uint16_t MotorControl_DutyFloatToPermyriad(float duty)
+{
+  const float clamped = MotorControl_ClampDuty(duty);
+  return (uint16_t)(clamped * 10000.0f + 0.5f);
+}
+
 static void MotorControl_ApplyPatternStep(void)
 {
-  const float d = g_duty;
+  const uint16_t d = g_duty_permyriad;
   switch (g_comm_step)
   {
-    case 0U: MotorDriver_SetPwmDuty(d, 0.0f, 0.0f); break;
-    case 1U: MotorDriver_SetPwmDuty(0.0f, d, 0.0f); break;
-    default: MotorDriver_SetPwmDuty(0.0f, 0.0f, d); break;
+    case 0U: MotorDriver_SetPwmDutyPermyriad(d, 0U, 0U); break;
+    case 1U: MotorDriver_SetPwmDutyPermyriad(0U, d, 0U); break;
+    default: MotorDriver_SetPwmDutyPermyriad(0U, 0U, d); break;
   }
   g_comm_step = (uint8_t)((g_comm_step + 1U) % 3U);
 }
@@ -41,6 +49,7 @@ void MotorControl_Init(void)
 {
   g_running = 0U;
   g_duty = MOTOR_DUTY_DEFAULT;
+  g_duty_permyriad = MotorControl_DutyFloatToPermyriad(MOTOR_DUTY_DEFAULT);
   g_comm_step = 0U;
   g_last_step_tick = HAL_GetTick();
 
@@ -72,6 +81,7 @@ void MotorControl_Stop(void)
 void MotorControl_SetDuty(float duty)
 {
   g_duty = MotorControl_ClampDuty(duty);
+  g_duty_permyriad = MotorControl_DutyFloatToPermyriad(g_duty);
 }
 
 float MotorControl_GetDuty(void)
