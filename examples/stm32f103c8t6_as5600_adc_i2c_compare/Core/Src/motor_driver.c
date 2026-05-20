@@ -39,6 +39,14 @@ static uint32_t DutyToCompare(float duty)
   return (uint32_t)((float)arr * clamped);
 }
 
+static uint32_t PermyriadToCompare(uint16_t duty_permyriad)
+{
+  uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim1);
+  uint32_t clamped = duty_permyriad;
+  if (clamped > 10000U) clamped = 10000U;
+  return (arr * clamped) / 10000U;
+}
+
 void MotorDriver_SetPwmDuty(float duty_u, float duty_v, float duty_w)
 {
   /* 分别设置 U/V/W 三相 CCR，对应 TIM1 CH1/CH2/CH3。 */
@@ -46,6 +54,13 @@ void MotorDriver_SetPwmDuty(float duty_u, float duty_v, float duty_w)
   __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_U, DutyToCompare(duty_u));
   __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_V, DutyToCompare(duty_v));
   __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_W, DutyToCompare(duty_w));
+}
+
+void MotorDriver_SetPwmDutyPermyriad(uint16_t u, uint16_t v, uint16_t w)
+{
+  __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_U, PermyriadToCompare(u));
+  __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_V, PermyriadToCompare(v));
+  __HAL_TIM_SET_COMPARE(&htim1, MOTOR_TIM_CH_W, PermyriadToCompare(w));
 }
 
 void MotorDriver_SetAllPwmZero(void)
