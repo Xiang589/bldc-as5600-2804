@@ -19,8 +19,8 @@
 #define MOTOR_LUT_PHASE_C_OFFSET     171U
 #define MOTOR_CENTER_DUTY_PERMYRIAD 5000U
 #define MOTOR_FULL_DUTY_PERMYRIAD    10000U
-#define MOTOR_AMPLITUDE_MIN          0.05f
-#define MOTOR_AMPLITUDE_MAX          0.20f
+#define MOTOR_AMPLITUDE_MIN_PERMYRIAD 500U
+#define MOTOR_AMPLITUDE_MAX_PERMYRIAD 2000U
 #define MOTOR_PHASE_FRAC_BITS        16U
 #define MOTOR_PHASE_SCALE            (1UL << MOTOR_PHASE_FRAC_BITS)
 #define MOTOR_PHASE_FULL             (MOTOR_LUT_SIZE * MOTOR_PHASE_SCALE)
@@ -114,9 +114,15 @@ static uint8_t MotorControl_ClampSpeedLevel(uint8_t level)
 static uint16_t MotorControl_DutyToAmplitudePermyriad(uint16_t duty_permyriad)
 {
   uint32_t amplitude = ((uint32_t)duty_permyriad * 33U) / 100U;
-  if (amplitude < 500U) amplitude = 500U;
-  if (amplitude > 2000U) amplitude = 2000U;
+  if (amplitude < MOTOR_AMPLITUDE_MIN_PERMYRIAD) amplitude = MOTOR_AMPLITUDE_MIN_PERMYRIAD;
+  if (amplitude > MOTOR_AMPLITUDE_MAX_PERMYRIAD) amplitude = MOTOR_AMPLITUDE_MAX_PERMYRIAD;
   return (uint16_t)amplitude;
+}
+
+static uint16_t MotorControl_DutyFloatToPermyriad(float duty)
+{
+  const float clamped = MotorControl_ClampDuty(duty);
+  return (uint16_t)(clamped * 10000.0f + 0.5f);
 }
 
 static uint16_t MotorControl_ClampPermyriad(int32_t duty)
@@ -147,7 +153,7 @@ void MotorControl_Init(void)
 {
   g_running = 0U;
   g_duty = MOTOR_DUTY_DEFAULT;
-  g_duty_permyriad = (uint16_t)(MOTOR_DUTY_DEFAULT * 10000.0f);
+  g_duty_permyriad = MotorControl_DutyFloatToPermyriad(MOTOR_DUTY_DEFAULT);
   g_direction = MOTOR_DIR_FWD;
   g_target_speed_level = MOTOR_SPEED_LEVEL_DEFAULT;
   g_target_period_ms = kSpeedPeriodMs[g_target_speed_level - 1U];
@@ -333,7 +339,7 @@ uint16_t MotorControl_GetStepPeriodMs(void) { return kSpeedPeriodMs[g_target_spe
 void MotorControl_SetDuty(float duty)
 {
   g_duty = MotorControl_ClampDuty(duty);
-  g_duty_permyriad = (uint16_t)(g_duty * 10000.0f);
+  g_duty_permyriad = MotorControl_DutyFloatToPermyriad(g_duty);
 }
 float MotorControl_GetDuty(void) { return g_duty; }
 void MotorControl_DutyUp(void) { MotorControl_SetDuty(g_duty + MOTOR_DUTY_STEP); }
