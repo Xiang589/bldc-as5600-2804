@@ -236,6 +236,7 @@ static void MotorTest_HandleUartCommand(uint32_t now)
   }
 }
 
+
 /* USER CODE END 0 */
 
 /**
@@ -310,7 +311,6 @@ int main(void)
     uint32_t now = HAL_GetTick();
 
     /* 每轮主循环都检查一次串口命令，无需用 HAL_Delay 阻塞等待串口数据。 */
-    MotorControl_Update(now);
     MotorUi_Update(now);
 
     /* 每 500ms 翻转 LED，作为“程序仍在运行”的心跳指示。 */

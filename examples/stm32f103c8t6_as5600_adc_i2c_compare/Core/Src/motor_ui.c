@@ -2,8 +2,7 @@
 
 #include <stdio.h>
 
-#include "as5600.h"
-#include "i2c.h"
+#include "motor_feedback.h"
 #include "lcd_ili9341.h"
 #include "motor_control.h"
 #include "touch_cal_storage.h"
@@ -16,7 +15,6 @@
 #define C_BTN 0x07E0U
 #define C_STOP 0xF800U
 #define C_CAL 0x001FU
-#define DUTY_STEP 0.05f
 #define TOUCH_SAMPLE_PERIOD_MS 25U
 #define UI_STATUS_PERIOD_MS 500U
 
@@ -39,16 +37,24 @@ typedef struct {
 
 typedef enum {
   UI_MODE_MAIN = 0,
-  UI_MODE_CAL_CONFIRM = 1,
-  UI_MODE_CALIBRATION = 2,
-  UI_MODE_CAL_DONE = 3
+  UI_MODE_SET = 1,
+  UI_MODE_CAL_CONFIRM = 2,
+  UI_MODE_CALIBRATION = 3,
+  UI_MODE_CAL_DONE = 4
 } UiMode_t;
 
-static UiButton g_btn_start = {20, 180, 90, 44, "START", C_BTN};
-static UiButton g_btn_stop = {130, 180, 90, 44, "STOP", C_STOP};
-static UiButton g_btn_plus = {20, 236, 90, 44, "DUTY+", C_BTN};
-static UiButton g_btn_minus = {130, 236, 90, 44, "DUTY-", C_BTN};
-static UiButton g_btn_cal = {170, 8, 60, 20, "CAL", C_CAL};
+static UiButton g_btn_start = {20, 176, 90, 48, "START", C_BTN};
+static UiButton g_btn_stop = {130, 176, 90, 48, "STOP", C_STOP};
+static UiButton g_btn_dir = {20, 244, 90, 48, "DIR", C_BTN};
+static UiButton g_btn_set = {130, 244, 90, 48, "SET", C_BTN};
+static UiButton g_btn_cal = {180, 6, 50, 24, "CAL", C_CAL};
+static UiButton g_btn_back_top = {180, 6, 50, 24, "<", C_CAL};
+static UiButton g_btn_spd_minus = {20, 120, 90, 48, "SPD-", C_BTN};
+static UiButton g_btn_spd_plus = {130, 120, 90, 48, "SPD+", C_BTN};
+static UiButton g_btn_duty_minus = {20, 190, 90, 48, "DUTY-", C_BTN};
+static UiButton g_btn_duty_plus = {130, 190, 90, 48, "DUTY+", C_BTN};
+static UiButton g_btn_mode = {20, 260, 90, 40, "MODE", C_BTN};
+static UiButton g_btn_back = {130, 260, 90, 40, "BACK", C_BTN};
 static UiButton g_btn_yes = {30, 180, 80, 44, "YES", C_BTN};
 static UiButton g_btn_no = {130, 180, 80, 44, "NO", C_STOP};
 
@@ -76,6 +82,8 @@ static CalPoint g_cal_points[5] = {
 };
 static uint8_t g_cal_index = 0U;
 
+static void Ui_DrawSetStatus(void);
+
 static uint8_t Ui_Hit(const UiButton *b, uint16_t x, uint16_t y)
 {
   return (x >= b->x) && (x < (b->x + b->w)) && (y >= b->y) && (y < (b->y + b->h));
@@ -83,11 +91,26 @@ static uint8_t Ui_Hit(const UiButton *b, uint16_t x, uint16_t y)
 
 static uint8_t Ui_ButtonId(uint16_t x, uint16_t y)
 {
-  if (Ui_Hit(&g_btn_cal, x, y)) return 1U;
-  if (Ui_Hit(&g_btn_start, x, y)) return 2U;
-  if (Ui_Hit(&g_btn_stop, x, y)) return 3U;
-  if (Ui_Hit(&g_btn_plus, x, y)) return 4U;
-  if (Ui_Hit(&g_btn_minus, x, y)) return 5U;
+  if (g_ui_mode == UI_MODE_MAIN)
+  {
+    if (Ui_Hit(&g_btn_cal, x, y)) return 1U;
+    if (Ui_Hit(&g_btn_start, x, y)) return 2U;
+    if (Ui_Hit(&g_btn_stop, x, y)) return 3U;
+    if (Ui_Hit(&g_btn_dir, x, y)) return 4U;
+    if (Ui_Hit(&g_btn_set, x, y)) return 5U;
+    return 0U;
+  }
+
+  if (g_ui_mode == UI_MODE_SET)
+  {
+    if (Ui_Hit(&g_btn_back_top, x, y)) return 11U;
+    if (Ui_Hit(&g_btn_spd_minus, x, y)) return 12U;
+    if (Ui_Hit(&g_btn_spd_plus, x, y)) return 13U;
+    if (Ui_Hit(&g_btn_duty_minus, x, y)) return 14U;
+    if (Ui_Hit(&g_btn_duty_plus, x, y)) return 15U;
+    if (Ui_Hit(&g_btn_mode, x, y)) return 16U;
+    if (Ui_Hit(&g_btn_back, x, y)) return 17U;
+  }
   return 0U;
 }
 
@@ -117,13 +140,56 @@ static void Cal_DrawPointScreen(uint8_t i)
 static void Ui_DrawMainScreen(void)
 {
   LCD_FillScreen(C_BG);
-  LCD_DrawText(30U, 8U, "AS5600 MOTOR", C_FG, C_BG);
+  LCD_DrawText(10U, 8U, "AS5600 OPEN LOOP", C_FG, C_BG);
   LCD_DrawRect(4U, 4U, 232U, 24U, C_FG);
   Ui_DrawButton(&g_btn_cal);
   Ui_DrawButton(&g_btn_start);
   Ui_DrawButton(&g_btn_stop);
-  Ui_DrawButton(&g_btn_plus);
-  Ui_DrawButton(&g_btn_minus);
+  Ui_DrawButton(&g_btn_dir);
+  Ui_DrawButton(&g_btn_set);
+}
+
+static void Ui_DrawSetScreen(void)
+{
+  LCD_FillScreen(C_BG);
+  LCD_DrawText(10U, 8U, "OPEN LOOP SET", C_FG, C_BG);
+  LCD_DrawRect(4U, 4U, 232U, 24U, C_FG);
+  Ui_DrawButton(&g_btn_back_top);
+  Ui_DrawSetStatus();
+  Ui_DrawButton(&g_btn_spd_minus);
+  Ui_DrawButton(&g_btn_spd_plus);
+  Ui_DrawButton(&g_btn_duty_minus);
+  Ui_DrawButton(&g_btn_duty_plus);
+  Ui_DrawButton(&g_btn_mode);
+  Ui_DrawButton(&g_btn_back);
+}
+
+static void Ui_DrawSetStatus(void)
+{
+  char line[32];
+
+  LCD_FillRect(10U, 40U, 220U, 76U, C_BG);
+
+  if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
+  {
+    int32_t tr = MotorControl_GetTargetRpmX10();
+    snprintf(line, sizeof(line), "Tgt: %ld.%ldrpm", (long)(tr / 10), (long)(tr % 10));
+  }
+  else
+  {
+    snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
+             (unsigned int)MotorControl_GetSpeedLevel(),
+             (unsigned int)MotorControl_GetTargetPeriodMs(),
+             (unsigned int)MotorControl_GetCurrentPeriodMs());
+  }
+  LCD_DrawText(10U, 48U, line, C_FG, C_BG);
+
+  snprintf(line, sizeof(line), "Mode: %s",
+           MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "CLSPD" : "OPEN");
+  LCD_DrawText(10U, 72U, line, C_FG, C_BG);
+
+  snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
+  LCD_DrawText(10U, 96U, line, C_FG, C_BG);
 }
 
 static void Ui_DrawConfirmScreen(void)
@@ -137,23 +203,39 @@ static void Ui_DrawConfirmScreen(void)
 static void Ui_DrawStatus(void)
 {
   char line[32];
-  char touch_line[32];
-  uint16_t raw = 0U;
 
   LCD_FillRect(10U, 34U, 220U, 132U, C_BG);
-  LCD_DrawText(10U, 36U, "Motor:", C_FG, C_BG);
+  LCD_DrawText(10U, 36U, "State:", C_FG, C_BG);
   LCD_DrawText(82U, 36U,
-               MotorControl_IsRunning() ? "RUN" : "STOP",
+               MotorControl_IsRunning()
+                 ? (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "RUN CL" : "RUN OPEN")
+                 : (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "STOP CL" : "STOP OPEN"),
                MotorControl_IsRunning() ? C_BTN : C_STOP,
                C_BG);
 
-  snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
-  LCD_DrawText(10U, 60U, line, C_FG, C_BG);
+  LCD_DrawText(10U, 60U, "Dir:", C_FG, C_BG);
+  LCD_DrawText(82U, 60U, MotorControl_GetDirection() == MOTOR_DIR_FWD ? "FWD" : "REV", C_FG, C_BG);
 
-  if (AS5600_ReadRawAngle(&hi2c1, &raw) == HAL_OK)
+  if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
-    float angle = AS5600_RawToDegree(raw);
-    int32_t angle_x100 = (int32_t)(angle * 100.0f);
+    int32_t tr = MotorControl_GetTargetRpmX10();
+    snprintf(line, sizeof(line), "Tgt: %ld.%ldrpm", (long)(tr / 10), (long)(tr % 10));
+  }
+  else
+  {
+    snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
+             (unsigned int)MotorControl_GetSpeedLevel(),
+             (unsigned int)MotorControl_GetTargetPeriodMs(),
+             (unsigned int)MotorControl_GetCurrentPeriodMs());
+  }
+  LCD_DrawText(10U, 84U, line, C_FG, C_BG);
+
+  snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
+  LCD_DrawText(10U, 108U, line, C_FG, C_BG);
+
+  if (MotorFeedback_IsAngleValid() != 0U)
+  {
+    int32_t angle_x100 = MotorFeedback_GetAngleX100();
     snprintf(line, sizeof(line), "Angle: %ld.%02ld",
              (long)(angle_x100 / 100), (long)(angle_x100 % 100));
   }
@@ -161,21 +243,24 @@ static void Ui_DrawStatus(void)
   {
     snprintf(line, sizeof(line), "Angle: ERR");
   }
-  LCD_DrawText(10U, 84U, line, C_FG, C_BG);
+  LCD_DrawText(10U, 132U, line, C_FG, C_BG);
 
-  if (g_touch_pen == 0U)
+  if (MotorFeedback_IsSpeedValid() != 0U)
   {
-    snprintf(touch_line, sizeof(touch_line), "Touch: ---");
-  }
-  else if (g_touch_has_xy == 0U)
-  {
-    snprintf(touch_line, sizeof(touch_line), "Touch: PEN");
+    int32_t rpm_x10 = MotorFeedback_GetRpmX10();
+    int32_t rpm_abs = rpm_x10;
+    if (rpm_abs < 0) rpm_abs = -rpm_abs;
+    snprintf(line, sizeof(line), "RPM: %s%ld.%ld",
+             (rpm_x10 < 0) ? "-" : "",
+             (long)(rpm_abs / 10),
+             (long)(rpm_abs % 10));
   }
   else
   {
-    snprintf(touch_line, sizeof(touch_line), "Touch: %u,%u", g_touch_x, g_touch_y);
+    snprintf(line, sizeof(line), "RPM: ERR");
   }
-  LCD_DrawText(10U, 108U, touch_line, C_FG, C_BG);
+  LCD_DrawText(10U, 156U, line, C_FG, C_BG);
+
 }
 
 static TouchCalibration_t Cal_Build(void)
@@ -456,17 +541,12 @@ static void Ui_HandleMainTouch(uint32_t now)
         }
         else if (hit == 4U)
         {
-#if TOUCH_DEBUG_PRINT
-          printf("[TOUCH] DUTY+\r\n");
-#endif
-          MotorControl_SetDuty(MotorControl_GetDuty() + DUTY_STEP);
+          MotorControl_ToggleDirection();
         }
         else if (hit == 5U)
         {
-#if TOUCH_DEBUG_PRINT
-          printf("[TOUCH] DUTY-\r\n");
-#endif
-          MotorControl_SetDuty(MotorControl_GetDuty() - DUTY_STEP);
+          g_ui_mode = UI_MODE_SET;
+          Ui_DrawSetScreen();
         }
       }
     }
@@ -481,12 +561,77 @@ static void Ui_HandleMainTouch(uint32_t now)
   }
 }
 
+
+static void Ui_HandleSetTouch(uint32_t now)
+{
+  uint16_t x, y;
+  if (Touch_IsPressed() != 0U)
+  {
+    g_touch_pen = 1U;
+    if ((now - g_touch_sample_tick) >= TOUCH_SAMPLE_PERIOD_MS)
+    {
+      g_touch_sample_tick = now;
+      if (Touch_ReadPoint(&x, &y) == 0U)
+      {
+        g_touch_has_xy = 0U;
+        return;
+      }
+      g_touch_has_xy = 1U;
+      g_touch_x = x;
+      g_touch_y = y;
+      uint8_t hit = Ui_ButtonId(x, y);
+      if ((g_touch_latch == 0U) && (hit != 0U))
+      {
+        g_touch_latch = 1U;
+        if (hit == 11U || hit == 17U)
+        {
+          g_ui_mode = UI_MODE_MAIN;
+          Ui_DrawMainScreen();
+          Ui_DrawStatus();
+        }
+        else if (hit == 16U)
+        {
+          MotorControl_ToggleMode();
+          Ui_DrawSetStatus();
+        }
+        else if (hit == 12U)
+        {
+          MotorControl_SpeedDown();
+          Ui_DrawSetStatus();
+        }
+        else if (hit == 13U)
+        {
+          MotorControl_SpeedUp();
+          Ui_DrawSetStatus();
+        }
+        else if (hit == 14U)
+        {
+          MotorControl_DutyDown();
+          Ui_DrawSetStatus();
+        }
+        else if (hit == 15U)
+        {
+          MotorControl_DutyUp();
+          Ui_DrawSetStatus();
+        }
+      }
+    }
+  }
+  else
+  {
+    g_touch_latch = 0U;
+    g_touch_pen = 0U;
+    g_touch_has_xy = 0U;
+  }
+}
+
 void MotorUi_Init(void)
 {
   TouchCalibration_t cal;
   LCD_Init();
   LCD_SetBacklight(1U);
   Touch_Init();
+  MotorFeedback_Init();
 
   if (TouchCalStorage_Load(&cal) != 0U)
   {
@@ -514,6 +659,8 @@ void MotorUi_Init(void)
 
 void MotorUi_Update(uint32_t now)
 {
+  MotorFeedback_Update(now);
+
   if (g_ui_mode == UI_MODE_CAL_DONE)
   {
     if ((now - g_mode_tick) >= 1200U)
@@ -537,10 +684,24 @@ void MotorUi_Update(uint32_t now)
     return;
   }
 
-  Ui_HandleMainTouch(now);
+  if (g_ui_mode == UI_MODE_SET)
+  {
+    Ui_HandleSetTouch(now);
+  }
+  else
+  {
+    Ui_HandleMainTouch(now);
+  }
   if ((now - g_last_draw) >= UI_STATUS_PERIOD_MS)
   {
-    Ui_DrawStatus();
+    if (g_ui_mode == UI_MODE_SET)
+    {
+      Ui_DrawSetStatus();
+    }
+    else
+    {
+      Ui_DrawStatus();
+    }
     g_last_draw = now;
   }
 }
