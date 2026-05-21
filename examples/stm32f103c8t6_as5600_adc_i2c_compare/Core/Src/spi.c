@@ -89,6 +89,10 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     /* SPI1 DMA Init */
+<<<<<<< Updated upstream
+=======
+    /* SPI1_TX Init */
+>>>>>>> Stashed changes
     hdma_spi1_tx.Instance = DMA1_Channel3;
     hdma_spi1_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
     hdma_spi1_tx.Init.PeriphInc = DMA_PINC_DISABLE;
@@ -96,13 +100,21 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     hdma_spi1_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
     hdma_spi1_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
     hdma_spi1_tx.Init.Mode = DMA_NORMAL;
+<<<<<<< Updated upstream
     hdma_spi1_tx.Init.Priority = DMA_PRIORITY_MEDIUM;
+=======
+    hdma_spi1_tx.Init.Priority = DMA_PRIORITY_LOW;
+>>>>>>> Stashed changes
     if (HAL_DMA_Init(&hdma_spi1_tx) != HAL_OK)
     {
       Error_Handler();
     }
 
+<<<<<<< Updated upstream
     __HAL_LINKDMA(spiHandle, hdmatx, hdma_spi1_tx);
+=======
+    __HAL_LINKDMA(spiHandle,hdmatx,hdma_spi1_tx);
+>>>>>>> Stashed changes
 
   /* USER CODE BEGIN SPI1_MspInit 1 */
 
@@ -128,8 +140,13 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* spiHandle)
     */
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7);
 
+<<<<<<< Updated upstream
     HAL_DMA_DeInit(spiHandle->hdmatx);
 
+=======
+    /* SPI1 DMA DeInit */
+    HAL_DMA_DeInit(spiHandle->hdmatx);
+>>>>>>> Stashed changes
   /* USER CODE BEGIN SPI1_MspDeInit 1 */
 
   /* USER CODE END SPI1_MspDeInit 1 */
