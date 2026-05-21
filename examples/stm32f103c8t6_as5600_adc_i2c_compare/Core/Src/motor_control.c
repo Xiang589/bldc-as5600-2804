@@ -17,9 +17,10 @@
 #define MOTOR_LUT_SIZE               256U
 #define MOTOR_LUT_PHASE_B_OFFSET     85U
 #define MOTOR_LUT_PHASE_C_OFFSET     171U
-#define MOTOR_CENTER_DUTY            0.50f
-#define MOTOR_AMPLITUDE_MIN          0.05f
-#define MOTOR_AMPLITUDE_MAX          0.20f
+#define MOTOR_CENTER_DUTY_PERMYRIAD 5000U
+#define MOTOR_FULL_DUTY_PERMYRIAD    10000U
+#define MOTOR_AMPLITUDE_MIN_PERMYRIAD 500U
+#define MOTOR_AMPLITUDE_MAX_PERMYRIAD 2000U
 #define MOTOR_PHASE_FRAC_BITS        16U
 #define MOTOR_PHASE_SCALE            (1UL << MOTOR_PHASE_FRAC_BITS)
 #define MOTOR_PHASE_FULL             (MOTOR_LUT_SIZE * MOTOR_PHASE_SCALE)
@@ -80,6 +81,7 @@ static const int16_t kSineLut[MOTOR_LUT_SIZE] = {
 
 static uint8_t g_running = 0U;
 static float g_duty = MOTOR_DUTY_DEFAULT;
+static uint16_t g_duty_permyriad = (uint16_t)(MOTOR_DUTY_DEFAULT * 10000.0f);
 static MotorDirection_t g_direction = MOTOR_DIR_FWD;
 static uint8_t g_target_speed_level = MOTOR_SPEED_LEVEL_DEFAULT;
 static uint16_t g_target_period_ms = 30U;
@@ -102,13 +104,6 @@ static float MotorControl_ClampDuty(float duty)
   return duty;
 }
 
-static float MotorControl_ClampPhaseDuty(float duty)
-{
-  if (duty < 0.0f) return 0.0f;
-  if (duty > 1.0f) return 1.0f;
-  return duty;
-}
-
 static uint8_t MotorControl_ClampSpeedLevel(uint8_t level)
 {
   if (level < MOTOR_SPEED_LEVEL_MIN) return MOTOR_SPEED_LEVEL_MIN;
@@ -116,33 +111,49 @@ static uint8_t MotorControl_ClampSpeedLevel(uint8_t level)
   return level;
 }
 
-static float MotorControl_DutyToAmplitude(float duty)
+static uint16_t MotorControl_DutyToAmplitudePermyriad(uint16_t duty_permyriad)
 {
-  float amplitude = duty * 0.33f;
-  if (amplitude < MOTOR_AMPLITUDE_MIN) amplitude = MOTOR_AMPLITUDE_MIN;
-  if (amplitude > MOTOR_AMPLITUDE_MAX) amplitude = MOTOR_AMPLITUDE_MAX;
-  return amplitude;
+  uint32_t amplitude = ((uint32_t)duty_permyriad * 33U) / 100U;
+  if (amplitude < MOTOR_AMPLITUDE_MIN_PERMYRIAD) amplitude = MOTOR_AMPLITUDE_MIN_PERMYRIAD;
+  if (amplitude > MOTOR_AMPLITUDE_MAX_PERMYRIAD) amplitude = MOTOR_AMPLITUDE_MAX_PERMYRIAD;
+  return (uint16_t)amplitude;
+}
+
+static uint16_t MotorControl_DutyFloatToPermyriad(float duty)
+{
+  const float clamped = MotorControl_ClampDuty(duty);
+  return (uint16_t)(clamped * 10000.0f + 0.5f);
+}
+
+static uint16_t MotorControl_ClampPermyriad(int32_t duty)
+{
+  if (duty < 0) return 0U;
+  if (duty > (int32_t)MOTOR_FULL_DUTY_PERMYRIAD) return MOTOR_FULL_DUTY_PERMYRIAD;
+  return (uint16_t)duty;
 }
 
 static void MotorControl_ApplyOpenLoopPwm(void)
 {
   const uint8_t index = (uint8_t)((g_phase_q16 >> MOTOR_PHASE_FRAC_BITS) & 0xFFU);
-  const float amplitude = MotorControl_DutyToAmplitude(g_duty);
+  const uint16_t amplitude_permyriad = MotorControl_DutyToAmplitudePermyriad(g_duty_permyriad);
   const int16_t sa = kSineLut[index];
   const int16_t sb = kSineLut[(uint8_t)(index + MOTOR_LUT_PHASE_B_OFFSET)];
   const int16_t sc = kSineLut[(uint8_t)(index + MOTOR_LUT_PHASE_C_OFFSET)];
 
-  const float du = MotorControl_ClampPhaseDuty(MOTOR_CENTER_DUTY + amplitude * ((float)sa / 32767.0f));
-  const float dv = MotorControl_ClampPhaseDuty(MOTOR_CENTER_DUTY + amplitude * ((float)sb / 32767.0f));
-  const float dw = MotorControl_ClampPhaseDuty(MOTOR_CENTER_DUTY + amplitude * ((float)sc / 32767.0f));
+  const int32_t du = (int32_t)MOTOR_CENTER_DUTY_PERMYRIAD + ((int32_t)amplitude_permyriad * (int32_t)sa) / 32767;
+  const int32_t dv = (int32_t)MOTOR_CENTER_DUTY_PERMYRIAD + ((int32_t)amplitude_permyriad * (int32_t)sb) / 32767;
+  const int32_t dw = (int32_t)MOTOR_CENTER_DUTY_PERMYRIAD + ((int32_t)amplitude_permyriad * (int32_t)sc) / 32767;
 
-  MotorDriver_SetPwmDuty(du, dv, dw);
+  MotorDriver_SetPwmDutyPermyriad(MotorControl_ClampPermyriad(du),
+                                  MotorControl_ClampPermyriad(dv),
+                                  MotorControl_ClampPermyriad(dw));
 }
 
 void MotorControl_Init(void)
 {
   g_running = 0U;
   g_duty = MOTOR_DUTY_DEFAULT;
+  g_duty_permyriad = MotorControl_DutyFloatToPermyriad(MOTOR_DUTY_DEFAULT);
   g_direction = MOTOR_DIR_FWD;
   g_target_speed_level = MOTOR_SPEED_LEVEL_DEFAULT;
   g_target_period_ms = kSpeedPeriodMs[g_target_speed_level - 1U];
@@ -325,7 +336,11 @@ void MotorControl_SpeedUp(void) { MotorControl_SetSpeedLevel((uint8_t)(g_target_
 void MotorControl_SpeedDown(void) { MotorControl_SetSpeedLevel((uint8_t)(g_target_speed_level - 1U)); }
 uint16_t MotorControl_GetStepPeriodMs(void) { return kSpeedPeriodMs[g_target_speed_level - 1U]; }
 
-void MotorControl_SetDuty(float duty) { g_duty = MotorControl_ClampDuty(duty); }
+void MotorControl_SetDuty(float duty)
+{
+  g_duty = MotorControl_ClampDuty(duty);
+  g_duty_permyriad = MotorControl_DutyFloatToPermyriad(g_duty);
+}
 float MotorControl_GetDuty(void) { return g_duty; }
 void MotorControl_DutyUp(void) { MotorControl_SetDuty(g_duty + MOTOR_DUTY_STEP); }
 void MotorControl_DutyDown(void) { MotorControl_SetDuty(g_duty - MOTOR_DUTY_STEP); }
