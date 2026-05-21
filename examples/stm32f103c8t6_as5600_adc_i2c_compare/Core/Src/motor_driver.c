@@ -66,7 +66,7 @@ void MotorDriver_SetPwmDutyPermyriad(uint16_t u, uint16_t v, uint16_t w)
 void MotorDriver_SetAllPwmZero(void)
 {
   /* 安全清零：三相全部输出 0 占空比。 */
-  MotorDriver_SetPwmDuty(0.0f, 0.0f, 0.0f);
+  MotorDriver_SetPwmDutyPermyriad(0U, 0U, 0U);
 }
 
 /*
