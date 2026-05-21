@@ -29,10 +29,11 @@ extern "C" {
 #include "main.h"
 
 /* USER CODE BEGIN Includes */
-
+#include "stm32f1xx_hal_dma.h"
 /* USER CODE END Includes */
 
 extern SPI_HandleTypeDef hspi1;
+extern DMA_HandleTypeDef hdma_spi1_tx;
 
 /* USER CODE BEGIN Private defines */
 

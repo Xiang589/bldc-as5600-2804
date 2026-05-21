@@ -24,6 +24,7 @@
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
+#include "dma.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -272,6 +273,7 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM1_Init();
   MX_USART2_UART_Init();
+  MX_DMA_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   /* 直接发送字符串：用于确认 USART2 外设与引脚配置正常。 */

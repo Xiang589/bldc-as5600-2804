@@ -11,11 +11,45 @@
 #define ILI9341_MADCTL  0x36
 #define ILI9341_PIXFMT  0x3A
 
+static volatile uint8_t g_lcd_dma_busy = 0U;
+static uint8_t g_lcd_dma_color_buf[1024];
+
+#define LCD_DMA_MIN_PIXELS 64U
+#define LCD_DMA_BUF_BYTES (sizeof(g_lcd_dma_color_buf))
+#define LCD_IO_TIMEOUT_MS 100U
+#define LCD_DMA_WAIT_TIMEOUT_MS 100U
+
 static void LCD_Select(uint8_t sel) { if (sel != 0U) { HAL_GPIO_WritePin(TP_CS_GPIO_Port, TP_CS_Pin, GPIO_PIN_SET); } HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, sel ? GPIO_PIN_RESET : GPIO_PIN_SET); }
 static void LCD_DC(uint8_t dc) { HAL_GPIO_WritePin(LCD_DC_GPIO_Port, LCD_DC_Pin, dc ? GPIO_PIN_SET : GPIO_PIN_RESET); }
 
-static void LCD_WriteCmd(uint8_t cmd) { LCD_DC(0U); LCD_Select(1U); HAL_SPI_Transmit(&hspi1, &cmd, 1U, 100U); LCD_Select(0U); }
-static void LCD_WriteData(const uint8_t *data, uint16_t len) { LCD_DC(1U); LCD_Select(1U); HAL_SPI_Transmit(&hspi1, (uint8_t *)data, len, 100U); LCD_Select(0U); }
+uint8_t LCD_IsBusy(void) { return g_lcd_dma_busy; }
+
+uint8_t LCD_WaitReady(uint32_t timeout_ms)
+{
+  uint32_t tick_start = HAL_GetTick();
+  while (g_lcd_dma_busy != 0U)
+  {
+    if ((HAL_GetTick() - tick_start) >= timeout_ms)
+    {
+      (void)HAL_SPI_Abort(&hspi1);
+      g_lcd_dma_busy = 0U;
+      LCD_Select(0U);
+      return 0U;
+    }
+  }
+  return 1U;
+}
+
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  if (hspi == &hspi1)
+  {
+    g_lcd_dma_busy = 0U;
+  }
+}
+
+static void LCD_WriteCmd(uint8_t cmd) { if (LCD_WaitReady(LCD_DMA_WAIT_TIMEOUT_MS) == 0U) { return; } LCD_DC(0U); LCD_Select(1U); HAL_SPI_Transmit(&hspi1, &cmd, 1U, LCD_IO_TIMEOUT_MS); LCD_Select(0U); }
+static void LCD_WriteData(const uint8_t *data, uint16_t len) { if (LCD_WaitReady(LCD_DMA_WAIT_TIMEOUT_MS) == 0U) { return; } LCD_DC(1U); LCD_Select(1U); HAL_SPI_Transmit(&hspi1, (uint8_t *)data, len, LCD_IO_TIMEOUT_MS); LCD_Select(0U); }
 
 static void LCD_SetWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
@@ -31,7 +65,7 @@ static void LCD_SetWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
   LCD_WriteCmd(ILI9341_RAMWR);
 }
 
-static void LCD_WriteColorBurst(uint16_t color, uint32_t count)
+static void LCD_WriteColorBurstBlocking(uint16_t color, uint32_t count)
 {
   uint8_t buf[64];
   uint8_t hi = (uint8_t)(color >> 8);
@@ -43,10 +77,51 @@ static void LCD_WriteColorBurst(uint16_t color, uint32_t count)
   while (count > 0U)
   {
     uint16_t px = (count > (sizeof(buf) / 2U)) ? (sizeof(buf) / 2U) : (uint16_t)count;
-    HAL_SPI_Transmit(&hspi1, buf, px * 2U, 100U);
+    HAL_SPI_Transmit(&hspi1, buf, px * 2U, LCD_IO_TIMEOUT_MS);
     count -= px;
   }
   LCD_Select(0U);
+}
+
+static void LCD_WriteColorBurstDma(uint16_t color, uint32_t count)
+{
+  uint8_t hi = (uint8_t)(color >> 8);
+  uint8_t lo = (uint8_t)color;
+  for (uint32_t i = 0; i < LCD_DMA_BUF_BYTES; i += 2U) { g_lcd_dma_color_buf[i] = hi; g_lcd_dma_color_buf[i + 1U] = lo; }
+
+  LCD_DC(1U);
+  LCD_Select(1U);
+  while (count > 0U)
+  {
+    uint32_t chunk_px = count;
+    if (chunk_px > (LCD_DMA_BUF_BYTES / 2U)) { chunk_px = LCD_DMA_BUF_BYTES / 2U; }
+    uint16_t chunk_bytes = (uint16_t)(chunk_px * 2U);
+
+    g_lcd_dma_busy = 1U;
+    if (HAL_SPI_Transmit_DMA(&hspi1, g_lcd_dma_color_buf, chunk_bytes) != HAL_OK)
+    {
+      g_lcd_dma_busy = 0U;
+      (void)HAL_SPI_Abort(&hspi1);
+      LCD_Select(0U);
+      return;
+    }
+    if (LCD_WaitReady(LCD_DMA_WAIT_TIMEOUT_MS) == 0U)
+    {
+      LCD_Select(0U);
+      return;
+    }
+    count -= chunk_px;
+  }
+  LCD_Select(0U);
+}
+
+static void LCD_WriteColorBurst(uint16_t color, uint32_t count)
+{
+  if (count < LCD_DMA_MIN_PIXELS) {
+    LCD_WriteColorBurstBlocking(color, count);
+  } else {
+    LCD_WriteColorBurstDma(color, count);
+  }
 }
 
 void LCD_Init(void)
