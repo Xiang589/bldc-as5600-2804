@@ -18,6 +18,8 @@ typedef struct {
 
 void Touch_Init(void);
 uint8_t Touch_IsPressed(void);
+HAL_StatusTypeDef Touch_ReadRawStatus(uint16_t *raw_x, uint16_t *raw_y);
+HAL_StatusTypeDef Touch_ReadPointStatus(uint16_t *x, uint16_t *y);
 uint8_t Touch_ReadRaw(uint16_t *raw_x, uint16_t *raw_y);
 uint8_t Touch_ReadPoint(uint16_t *x, uint16_t *y);
 void Touch_SetCalibration(const TouchCalibration_t *cal);

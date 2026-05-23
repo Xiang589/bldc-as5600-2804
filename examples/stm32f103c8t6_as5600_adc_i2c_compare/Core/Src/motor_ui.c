@@ -1,6 +1,7 @@
 #include "motor_ui.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "motor_feedback.h"
 #include "lcd_ili9341.h"
@@ -17,6 +18,12 @@
 #define C_CAL 0x001FU
 #define TOUCH_SAMPLE_PERIOD_MS 25U
 #define UI_STATUS_PERIOD_MS 500U
+#define UI_STATUS_X 10U
+#define UI_STATUS_VALUE_X 82U
+#define UI_STATUS_AREA_Y 34U
+#define UI_STATUS_AREA_W 220U
+#define UI_STATUS_AREA_H 132U
+#define UI_STATUS_LINE_H 16U
 
 typedef struct {
   uint16_t x;
@@ -34,6 +41,16 @@ typedef struct {
   uint16_t rx;
   uint16_t ry;
 } CalPoint;
+
+typedef struct {
+  uint8_t valid;
+  char state[16];
+  char dir[8];
+  char speed[32];
+  char duty[16];
+  char angle[24];
+  char rpm[24];
+} UiStatusCache;
 
 typedef enum {
   UI_MODE_MAIN = 0,
@@ -73,6 +90,7 @@ static uint8_t g_hit_stable_count = 0U;
 static uint16_t g_touch_x = 0U;
 static uint16_t g_touch_y = 0U;
 static TouchCalibration_t g_prev_cal;
+static UiStatusCache g_status_cache;
 static CalPoint g_cal_points[5] = {
   {"LT", 20, 20, 0, 0},
   {"RT", 220, 20, 0, 0},
@@ -83,6 +101,7 @@ static CalPoint g_cal_points[5] = {
 static uint8_t g_cal_index = 0U;
 
 static void Ui_DrawSetStatus(void);
+static void Ui_StatusInvalidate(void);
 
 static uint8_t Ui_Hit(const UiButton *b, uint16_t x, uint16_t y)
 {
@@ -137,8 +156,64 @@ static void Cal_DrawPointScreen(uint8_t i)
   Cal_DrawCross(g_cal_points[i].sx, g_cal_points[i].sy);
 }
 
+static void Ui_StatusInvalidate(void)
+{
+  memset(&g_status_cache, 0, sizeof(g_status_cache));
+}
+
+static void Ui_CopyStatusText(char *dst, size_t dst_size, const char *src)
+{
+  if (dst_size == 0U)
+  {
+    return;
+  }
+
+  (void)snprintf(dst, dst_size, "%s", src);
+}
+
+static uint8_t Ui_StatusChanged(const char *cached, const char *text)
+{
+  return (g_status_cache.valid == 0U) || (strcmp(cached, text) != 0);
+}
+
+static void Ui_ClearStatusLine(uint16_t y)
+{
+  LCD_FillRect(UI_STATUS_X, (uint16_t)(y - 2U), UI_STATUS_AREA_W, UI_STATUS_LINE_H, C_BG);
+}
+
+static void Ui_DrawStatusValueLine(uint16_t y,
+                                   const char *label,
+                                   const char *value,
+                                   uint16_t value_color,
+                                   char *cache,
+                                   size_t cache_size)
+{
+  if (Ui_StatusChanged(cache, value) == 0U)
+  {
+    return;
+  }
+
+  Ui_ClearStatusLine(y);
+  LCD_DrawText(UI_STATUS_X, y, label, C_FG, C_BG);
+  LCD_DrawText(UI_STATUS_VALUE_X, y, value, value_color, C_BG);
+  Ui_CopyStatusText(cache, cache_size, value);
+}
+
+static void Ui_DrawStatusLine(uint16_t y, const char *text, char *cache, size_t cache_size)
+{
+  if (Ui_StatusChanged(cache, text) == 0U)
+  {
+    return;
+  }
+
+  Ui_ClearStatusLine(y);
+  LCD_DrawText(UI_STATUS_X, y, text, C_FG, C_BG);
+  Ui_CopyStatusText(cache, cache_size, text);
+}
+
 static void Ui_DrawMainScreen(void)
 {
+  Ui_StatusInvalidate();
   LCD_FillScreen(C_BG);
   LCD_DrawText(10U, 8U, "AS5600 OPEN LOOP", C_FG, C_BG);
   LCD_DrawRect(4U, 4U, 232U, 24U, C_FG);
@@ -202,19 +277,25 @@ static void Ui_DrawConfirmScreen(void)
 
 static void Ui_DrawStatus(void)
 {
+  const char *state;
+  const char *dir;
   char line[32];
 
-  LCD_FillRect(10U, 34U, 220U, 132U, C_BG);
-  LCD_DrawText(10U, 36U, "State:", C_FG, C_BG);
-  LCD_DrawText(82U, 36U,
-               MotorControl_IsRunning()
-                 ? (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "RUN CL" : "RUN OPEN")
-                 : (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "STOP CL" : "STOP OPEN"),
-               MotorControl_IsRunning() ? C_BTN : C_STOP,
-               C_BG);
+  if (g_status_cache.valid == 0U)
+  {
+    LCD_FillRect(UI_STATUS_X, UI_STATUS_AREA_Y, UI_STATUS_AREA_W, UI_STATUS_AREA_H, C_BG);
+  }
 
-  LCD_DrawText(10U, 60U, "Dir:", C_FG, C_BG);
-  LCD_DrawText(82U, 60U, MotorControl_GetDirection() == MOTOR_DIR_FWD ? "FWD" : "REV", C_FG, C_BG);
+  state = MotorControl_IsRunning()
+            ? (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "RUN CL" : "RUN OPEN")
+            : (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "STOP CL" : "STOP OPEN");
+  Ui_DrawStatusValueLine(36U, "State:", state,
+                         MotorControl_IsRunning() ? C_BTN : C_STOP,
+                         g_status_cache.state, sizeof(g_status_cache.state));
+
+  dir = MotorControl_GetDirection() == MOTOR_DIR_FWD ? "FWD" : "REV";
+  Ui_DrawStatusValueLine(60U, "Dir:", dir, C_FG,
+                         g_status_cache.dir, sizeof(g_status_cache.dir));
 
   if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
@@ -228,10 +309,10 @@ static void Ui_DrawStatus(void)
              (unsigned int)MotorControl_GetTargetPeriodMs(),
              (unsigned int)MotorControl_GetCurrentPeriodMs());
   }
-  LCD_DrawText(10U, 84U, line, C_FG, C_BG);
+  Ui_DrawStatusLine(84U, line, g_status_cache.speed, sizeof(g_status_cache.speed));
 
   snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
-  LCD_DrawText(10U, 108U, line, C_FG, C_BG);
+  Ui_DrawStatusLine(108U, line, g_status_cache.duty, sizeof(g_status_cache.duty));
 
   if (MotorFeedback_IsAngleValid() != 0U)
   {
@@ -243,7 +324,7 @@ static void Ui_DrawStatus(void)
   {
     snprintf(line, sizeof(line), "Angle: ERR");
   }
-  LCD_DrawText(10U, 132U, line, C_FG, C_BG);
+  Ui_DrawStatusLine(132U, line, g_status_cache.angle, sizeof(g_status_cache.angle));
 
   if (MotorFeedback_IsSpeedValid() != 0U)
   {
@@ -259,8 +340,9 @@ static void Ui_DrawStatus(void)
   {
     snprintf(line, sizeof(line), "RPM: ERR");
   }
-  LCD_DrawText(10U, 156U, line, C_FG, C_BG);
+  Ui_DrawStatusLine(156U, line, g_status_cache.rpm, sizeof(g_status_cache.rpm));
 
+  g_status_cache.valid = 1U;
 }
 
 static TouchCalibration_t Cal_Build(void)
