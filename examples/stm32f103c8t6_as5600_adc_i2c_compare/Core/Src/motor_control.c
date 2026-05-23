@@ -96,7 +96,9 @@ static int32_t g_cl_integrator = 0;
 static uint32_t g_last_cl_tick = 0U;
 static uint16_t g_cl_period_ms = 80U;
 static uint32_t g_feedback_lost_tick = 0U;
-static uint32_t g_start_tick = 0U;
+static uint32_t g_startup_start_tick = 0U;
+static uint8_t g_ever_had_valid_speed_feedback = 0U;
+static uint32_t g_feedback_lost_count = 0U;
 static uint8_t g_control_ready = 0U;
 
 static float MotorControl_ClampDuty(float duty)
@@ -153,8 +155,17 @@ static void MotorControl_ApplyOpenLoopPwm(void)
 
 static uint8_t MotorControl_IsRunningState(MotorControlState_t state)
 {
-  return ((state == MOTOR_STATE_RUNNING_OPEN_LOOP) ||
+  return ((state == MOTOR_STATE_STARTUP) ||
+          (state == MOTOR_STATE_RUNNING_OPEN_LOOP) ||
           (state == MOTOR_STATE_RUNNING_CLOSED_LOOP));
+}
+
+static void MotorControl_ResetClosedLoopTracking(uint32_t startup_tick)
+{
+  g_startup_start_tick = startup_tick;
+  g_ever_had_valid_speed_feedback = 0U;
+  g_feedback_lost_tick = 0U;
+  g_feedback_lost_count = 0U;
 }
 
 static void MotorControl_ResetRunState(uint32_t now)
@@ -165,8 +176,7 @@ static void MotorControl_ResetRunState(uint32_t now)
   g_last_update_tick = now;
   g_last_ramp_tick = now;
   g_last_cl_tick = now;
-  g_feedback_lost_tick = 0U;
-  g_start_tick = now;
+  MotorControl_ResetClosedLoopTracking(0U);
 }
 
 static void MotorControl_StopToState(MotorStopReason_t reason,
@@ -189,6 +199,7 @@ static void MotorControl_StopWithReason(MotorStopReason_t reason)
   {
     MotorDriver_SetAllPwmZero();
     MotorDriver_Disable();
+    MotorControl_ResetClosedLoopTracking(0U);
     return;
   }
 
@@ -218,8 +229,7 @@ void MotorControl_Init(void)
   g_cl_integrator = 0;
   g_last_cl_tick = g_last_update_tick;
   g_cl_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
-  g_feedback_lost_tick = 0U;
-  g_start_tick = 0U;
+  MotorControl_ResetClosedLoopTracking(0U);
 
   MotorDriver_SetAllPwmZero();
   MotorDriver_Disable();
@@ -228,11 +238,15 @@ void MotorControl_Init(void)
 
 void MotorControl_Start(void)
 {
+  MotorFeedbackSnapshot_t feedback;
+
   if (MotorControl_IsRunning() != 0U) return;
   if (g_fault != MOTOR_FAULT_NONE) return;
   if (g_state != MOTOR_STATE_STOPPED) return;
 
-  if ((g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP) && (MotorFeedback_IsAngleValid() == 0U))
+  MotorFeedback_GetSnapshot(&feedback);
+
+  if ((g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP) && (feedback.angle_valid == 0U))
   {
     g_stop_reason = MOTOR_STOP_REASON_START_DENIED_NO_ANGLE;
     return;
@@ -245,15 +259,16 @@ void MotorControl_Start(void)
   MotorDriver_SetAllPwmZero();
   MotorDriver_Enable();
   g_state = (g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
-              ? MOTOR_STATE_RUNNING_CLOSED_LOOP
+              ? MOTOR_STATE_STARTUP
               : MOTOR_STATE_RUNNING_OPEN_LOOP;
   g_stop_reason = MOTOR_STOP_REASON_NONE;
   g_fault = MOTOR_FAULT_NONE;
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
   g_last_cl_tick = g_last_update_tick;
-  g_feedback_lost_tick = 0U;
-  g_start_tick = g_last_update_tick;
+  MotorControl_ResetClosedLoopTracking((g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
+                                         ? g_last_update_tick
+                                         : 0U);
   MotorControl_ApplyOpenLoopPwm();
 }
 
@@ -265,6 +280,7 @@ void MotorControl_Stop(void)
 void MotorControl_Update(uint32_t now)
 {
   uint32_t dt_ms;
+  MotorFeedbackSnapshot_t feedback;
 
   if (MotorControl_IsRunning() == 0U) return;
 
@@ -274,11 +290,23 @@ void MotorControl_Update(uint32_t now)
 
   if (g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
-    if (MotorFeedback_IsSpeedValid() == 0U)
+    MotorFeedback_GetSnapshot(&feedback);
+
+    if (feedback.speed_valid == 0U)
     {
-      if ((now - g_start_tick) < MOTOR_CL_STARTUP_GRACE_MS)
+      g_feedback_lost_count++;
+
+      if ((g_ever_had_valid_speed_feedback == 0U) &&
+          ((now - g_startup_start_tick) >= MOTOR_CL_STARTUP_GRACE_MS))
       {
-        /* allow startup without valid speed feedback yet */
+        MotorControl_StopWithFault(MOTOR_STOP_REASON_FEEDBACK_LOST,
+                                   MOTOR_FAULT_STARTUP_FEEDBACK_TIMEOUT);
+        return;
+      }
+
+      if (g_ever_had_valid_speed_feedback == 0U)
+      {
+        /* startup only expresses the feedback grace window; PWM stays unchanged */
       }
       else
       {
@@ -293,11 +321,17 @@ void MotorControl_Update(uint32_t now)
     }
     else
     {
+      if (g_state == MOTOR_STATE_STARTUP)
+      {
+        g_state = MOTOR_STATE_RUNNING_CLOSED_LOOP;
+      }
+      g_ever_had_valid_speed_feedback = 1U;
       g_feedback_lost_tick = 0U;
+      g_feedback_lost_count = 0U;
       if ((now - g_last_cl_tick) >= MOTOR_CL_PERIOD_MS)
       {
         int32_t target = kTargetRpmX10[g_target_speed_level - 1U];
-        int32_t actual = MotorFeedback_GetRpmX10();
+        int32_t actual = feedback.rpm_x10;
         int32_t err;
         int32_t adjust;
         int32_t np;
@@ -375,6 +409,7 @@ void MotorControl_ClearFault(void)
 
   MotorDriver_SetAllPwmZero();
   MotorDriver_Disable();
+  MotorControl_ResetClosedLoopTracking(0U);
   g_fault = MOTOR_FAULT_NONE;
   if (g_state == MOTOR_STATE_FAULT)
   {
@@ -419,6 +454,10 @@ void MotorControl_SetDuty(float duty)
   g_duty_permyriad = MotorControl_DutyFloatToPermyriad(g_duty);
 }
 float MotorControl_GetDuty(void) { return g_duty; }
+uint16_t MotorControl_GetModulationAmplitudePermyriad(void)
+{
+  return MotorControl_DutyToAmplitudePermyriad(g_duty_permyriad);
+}
 void MotorControl_DutyUp(void) { MotorControl_SetDuty(g_duty + MOTOR_DUTY_STEP); }
 void MotorControl_DutyDown(void) { MotorControl_SetDuty(g_duty - MOTOR_DUTY_STEP); }
 

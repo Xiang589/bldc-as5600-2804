@@ -47,7 +47,8 @@ typedef struct {
   char state[16];
   char dir[8];
   char speed[32];
-  char duty[16];
+  char duty[24];
+  char mode[16];
   char angle[24];
   char rpm[24];
 } UiStatusCache;
@@ -91,6 +92,7 @@ static uint16_t g_touch_x = 0U;
 static uint16_t g_touch_y = 0U;
 static TouchCalibration_t g_prev_cal;
 static UiStatusCache g_status_cache;
+static uint8_t g_stop_button_fault_view = 0xFFU;
 static CalPoint g_cal_points[5] = {
   {"LT", 20, 20, 0, 0},
   {"RT", 220, 20, 0, 0},
@@ -138,6 +140,36 @@ static void Ui_DrawButton(const UiButton *b)
   LCD_FillRect(b->x, b->y, b->w, b->h, b->color);
   LCD_DrawRect(b->x, b->y, b->w, b->h, C_FG);
   LCD_DrawText((uint16_t)(b->x + 10U), (uint16_t)(b->y + 6U), b->label, C_FG, b->color);
+}
+
+static void Ui_DrawStopButton(void)
+{
+  UiButton button = g_btn_stop;
+  uint8_t fault_view = (MotorControl_GetState() == MOTOR_STATE_FAULT) ? 1U : 0U;
+
+  button.label = (fault_view != 0U) ? "CLR" : "STOP";
+  Ui_DrawButton(&button);
+  g_stop_button_fault_view = fault_view;
+}
+
+static void Ui_UpdateStopButton(void)
+{
+  uint8_t fault_view = (MotorControl_GetState() == MOTOR_STATE_FAULT) ? 1U : 0U;
+
+  if (fault_view != g_stop_button_fault_view)
+  {
+    Ui_DrawStopButton();
+  }
+}
+
+static void Ui_FormatDutyAmp(char *line, size_t line_size)
+{
+  uint16_t amp = MotorControl_GetModulationAmplitudePermyriad();
+
+  snprintf(line, line_size, "Duty: %u%% Amp:%u.%u%%",
+           (unsigned int)(MotorControl_GetDuty() * 100.0f),
+           (unsigned int)(amp / 100U),
+           (unsigned int)((amp / 10U) % 10U));
 }
 
 static void Cal_DrawCross(uint16_t x, uint16_t y)
@@ -219,13 +251,15 @@ static void Ui_DrawMainScreen(void)
   LCD_DrawRect(4U, 4U, 232U, 24U, C_FG);
   Ui_DrawButton(&g_btn_cal);
   Ui_DrawButton(&g_btn_start);
-  Ui_DrawButton(&g_btn_stop);
+  g_stop_button_fault_view = 0xFFU;
+  Ui_DrawStopButton();
   Ui_DrawButton(&g_btn_dir);
   Ui_DrawButton(&g_btn_set);
 }
 
 static void Ui_DrawSetScreen(void)
 {
+  Ui_StatusInvalidate();
   LCD_FillScreen(C_BG);
   LCD_DrawText(10U, 8U, "OPEN LOOP SET", C_FG, C_BG);
   LCD_DrawRect(4U, 4U, 232U, 24U, C_FG);
@@ -243,8 +277,6 @@ static void Ui_DrawSetStatus(void)
 {
   char line[32];
 
-  LCD_FillRect(10U, 40U, 220U, 76U, C_BG);
-
   if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
     int32_t tr = MotorControl_GetTargetRpmX10();
@@ -252,19 +284,20 @@ static void Ui_DrawSetStatus(void)
   }
   else
   {
-    snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
+    snprintf(line, sizeof(line), "Spd: L%u %ums cur%u",
              (unsigned int)MotorControl_GetSpeedLevel(),
              (unsigned int)MotorControl_GetTargetPeriodMs(),
              (unsigned int)MotorControl_GetCurrentPeriodMs());
   }
-  LCD_DrawText(10U, 48U, line, C_FG, C_BG);
+  Ui_DrawStatusLine(48U, line, g_status_cache.speed, sizeof(g_status_cache.speed));
 
   snprintf(line, sizeof(line), "Mode: %s",
            MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "CLSPD" : "OPEN");
-  LCD_DrawText(10U, 72U, line, C_FG, C_BG);
+  Ui_DrawStatusLine(72U, line, g_status_cache.mode, sizeof(g_status_cache.mode));
 
-  snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
-  LCD_DrawText(10U, 96U, line, C_FG, C_BG);
+  Ui_FormatDutyAmp(line, sizeof(line));
+  Ui_DrawStatusLine(96U, line, g_status_cache.duty, sizeof(g_status_cache.duty));
+  g_status_cache.valid = 1U;
 }
 
 static const char *Ui_GetMotorStateText(void)
@@ -276,6 +309,9 @@ static const char *Ui_GetMotorStateText(void)
 
     case MOTOR_STATE_RUNNING_CLOSED_LOOP:
       return "RUN CL";
+
+    case MOTOR_STATE_STARTUP:
+      return "STARTUP";
 
     case MOTOR_STATE_FAULT:
       switch (MotorControl_GetFault())
@@ -323,6 +359,7 @@ static void Ui_DrawStatus(void)
 {
   const char *state;
   const char *dir;
+  MotorFeedbackSnapshot_t feedback;
   char line[32];
 
   if (g_status_cache.valid == 0U)
@@ -330,10 +367,13 @@ static void Ui_DrawStatus(void)
     LCD_FillRect(UI_STATUS_X, UI_STATUS_AREA_Y, UI_STATUS_AREA_W, UI_STATUS_AREA_H, C_BG);
   }
 
+  MotorFeedback_GetSnapshot(&feedback);
+
   state = Ui_GetMotorStateText();
   Ui_DrawStatusValueLine(36U, "State:", state,
                          MotorControl_IsRunning() ? C_BTN : C_STOP,
                          g_status_cache.state, sizeof(g_status_cache.state));
+  Ui_UpdateStopButton();
 
   dir = MotorControl_GetDirection() == MOTOR_DIR_FWD ? "FWD" : "REV";
   Ui_DrawStatusValueLine(60U, "Dir:", dir, C_FG,
@@ -346,19 +386,19 @@ static void Ui_DrawStatus(void)
   }
   else
   {
-    snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
+    snprintf(line, sizeof(line), "Spd: L%u %ums cur%u",
              (unsigned int)MotorControl_GetSpeedLevel(),
              (unsigned int)MotorControl_GetTargetPeriodMs(),
              (unsigned int)MotorControl_GetCurrentPeriodMs());
   }
   Ui_DrawStatusLine(84U, line, g_status_cache.speed, sizeof(g_status_cache.speed));
 
-  snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
+  Ui_FormatDutyAmp(line, sizeof(line));
   Ui_DrawStatusLine(108U, line, g_status_cache.duty, sizeof(g_status_cache.duty));
 
-  if (MotorFeedback_IsAngleValid() != 0U)
+  if (feedback.angle_valid != 0U)
   {
-    int32_t angle_x100 = MotorFeedback_GetAngleX100();
+    int32_t angle_x100 = feedback.angle_x100;
     snprintf(line, sizeof(line), "Angle: %ld.%02ld",
              (long)(angle_x100 / 100), (long)(angle_x100 % 100));
   }
@@ -368,9 +408,9 @@ static void Ui_DrawStatus(void)
   }
   Ui_DrawStatusLine(132U, line, g_status_cache.angle, sizeof(g_status_cache.angle));
 
-  if (MotorFeedback_IsSpeedValid() != 0U)
+  if (feedback.speed_valid != 0U)
   {
-    int32_t rpm_x10 = MotorFeedback_GetRpmX10();
+    int32_t rpm_x10 = feedback.rpm_x10;
     int32_t rpm_abs = rpm_x10;
     if (rpm_abs < 0) rpm_abs = -rpm_abs;
     snprintf(line, sizeof(line), "RPM: %s%ld.%ld",
@@ -661,7 +701,16 @@ static void Ui_HandleMainTouch(uint32_t now)
 #if TOUCH_DEBUG_PRINT
           printf("[TOUCH] STOP\r\n");
 #endif
-          MotorControl_Stop();
+          if (MotorControl_GetState() == MOTOR_STATE_FAULT)
+          {
+            MotorControl_ClearFault();
+            Ui_StatusInvalidate();
+            Ui_DrawStatus();
+          }
+          else
+          {
+            MotorControl_Stop();
+          }
         }
         else if (hit == 4U)
         {

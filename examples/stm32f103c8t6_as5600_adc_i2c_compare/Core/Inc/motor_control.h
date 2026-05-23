@@ -19,9 +19,10 @@ typedef enum {
 
 typedef enum {
   MOTOR_STATE_STOPPED = 0,
-  MOTOR_STATE_RUNNING_OPEN_LOOP = 1,
-  MOTOR_STATE_RUNNING_CLOSED_LOOP = 2,
-  MOTOR_STATE_FAULT = 3
+  MOTOR_STATE_STARTUP = 1,
+  MOTOR_STATE_RUNNING_OPEN_LOOP = 2,
+  MOTOR_STATE_RUNNING_CLOSED_LOOP = 3,
+  MOTOR_STATE_FAULT = 4
 } MotorControlState_t;
 
 typedef enum {
@@ -68,6 +69,7 @@ uint8_t MotorControl_GetPhaseIndex(void);
 
 void MotorControl_SetDuty(float duty);
 float MotorControl_GetDuty(void);
+uint16_t MotorControl_GetModulationAmplitudePermyriad(void);
 void MotorControl_DutyUp(void);
 void MotorControl_DutyDown(void);
 
