@@ -33,7 +33,12 @@ HAL_StatusTypeDef LCD_WaitForReady(uint32_t timeout_ms)
     }
   }
 
-  return (HAL_SPI_GetError(&hspi1) == HAL_SPI_ERROR_NONE) ? HAL_OK : HAL_ERROR;
+  if (HAL_SPI_GetError(&hspi1) != HAL_SPI_ERROR_NONE)
+  {
+    (void)HAL_SPI_Abort(&hspi1);
+  }
+
+  return HAL_OK;
 }
 
 static HAL_StatusTypeDef LCD_WriteCmd(uint8_t cmd)
