@@ -91,6 +91,7 @@ static uint16_t g_touch_x = 0U;
 static uint16_t g_touch_y = 0U;
 static TouchCalibration_t g_prev_cal;
 static UiStatusCache g_status_cache;
+static uint8_t g_stop_button_fault_view = 0xFFU;
 static CalPoint g_cal_points[5] = {
   {"LT", 20, 20, 0, 0},
   {"RT", 220, 20, 0, 0},
@@ -138,6 +139,26 @@ static void Ui_DrawButton(const UiButton *b)
   LCD_FillRect(b->x, b->y, b->w, b->h, b->color);
   LCD_DrawRect(b->x, b->y, b->w, b->h, C_FG);
   LCD_DrawText((uint16_t)(b->x + 10U), (uint16_t)(b->y + 6U), b->label, C_FG, b->color);
+}
+
+static void Ui_DrawStopButton(void)
+{
+  UiButton button = g_btn_stop;
+  uint8_t fault_view = (MotorControl_GetState() == MOTOR_STATE_FAULT) ? 1U : 0U;
+
+  button.label = (fault_view != 0U) ? "CLR" : "STOP";
+  Ui_DrawButton(&button);
+  g_stop_button_fault_view = fault_view;
+}
+
+static void Ui_UpdateStopButton(void)
+{
+  uint8_t fault_view = (MotorControl_GetState() == MOTOR_STATE_FAULT) ? 1U : 0U;
+
+  if (fault_view != g_stop_button_fault_view)
+  {
+    Ui_DrawStopButton();
+  }
 }
 
 static void Ui_FormatDutyAmp(char *line, size_t line_size)
@@ -229,7 +250,8 @@ static void Ui_DrawMainScreen(void)
   LCD_DrawRect(4U, 4U, 232U, 24U, C_FG);
   Ui_DrawButton(&g_btn_cal);
   Ui_DrawButton(&g_btn_start);
-  Ui_DrawButton(&g_btn_stop);
+  g_stop_button_fault_view = 0xFFU;
+  Ui_DrawStopButton();
   Ui_DrawButton(&g_btn_dir);
   Ui_DrawButton(&g_btn_set);
 }
@@ -350,6 +372,7 @@ static void Ui_DrawStatus(void)
   Ui_DrawStatusValueLine(36U, "State:", state,
                          MotorControl_IsRunning() ? C_BTN : C_STOP,
                          g_status_cache.state, sizeof(g_status_cache.state));
+  Ui_UpdateStopButton();
 
   dir = MotorControl_GetDirection() == MOTOR_DIR_FWD ? "FWD" : "REV";
   Ui_DrawStatusValueLine(60U, "Dir:", dir, C_FG,
@@ -677,7 +700,16 @@ static void Ui_HandleMainTouch(uint32_t now)
 #if TOUCH_DEBUG_PRINT
           printf("[TOUCH] STOP\r\n");
 #endif
-          MotorControl_Stop();
+          if (MotorControl_GetState() == MOTOR_STATE_FAULT)
+          {
+            MotorControl_ClearFault();
+            Ui_StatusInvalidate();
+            Ui_DrawStatus();
+          }
+          else
+          {
+            MotorControl_Stop();
+          }
         }
         else if (hit == 4U)
         {
