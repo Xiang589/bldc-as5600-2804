@@ -47,7 +47,8 @@ typedef struct {
   char state[16];
   char dir[8];
   char speed[32];
-  char duty[16];
+  char duty[24];
+  char mode[16];
   char angle[24];
   char rpm[24];
 } UiStatusCache;
@@ -258,6 +259,7 @@ static void Ui_DrawMainScreen(void)
 
 static void Ui_DrawSetScreen(void)
 {
+  Ui_StatusInvalidate();
   LCD_FillScreen(C_BG);
   LCD_DrawText(10U, 8U, "OPEN LOOP SET", C_FG, C_BG);
   LCD_DrawRect(4U, 4U, 232U, 24U, C_FG);
@@ -275,8 +277,6 @@ static void Ui_DrawSetStatus(void)
 {
   char line[32];
 
-  LCD_FillRect(10U, 40U, 220U, 76U, C_BG);
-
   if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
     int32_t tr = MotorControl_GetTargetRpmX10();
@@ -289,14 +289,15 @@ static void Ui_DrawSetStatus(void)
              (unsigned int)MotorControl_GetTargetPeriodMs(),
              (unsigned int)MotorControl_GetCurrentPeriodMs());
   }
-  LCD_DrawText(10U, 48U, line, C_FG, C_BG);
+  Ui_DrawStatusLine(48U, line, g_status_cache.speed, sizeof(g_status_cache.speed));
 
   snprintf(line, sizeof(line), "Mode: %s",
            MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "CLSPD" : "OPEN");
-  LCD_DrawText(10U, 72U, line, C_FG, C_BG);
+  Ui_DrawStatusLine(72U, line, g_status_cache.mode, sizeof(g_status_cache.mode));
 
   Ui_FormatDutyAmp(line, sizeof(line));
-  LCD_DrawText(10U, 96U, line, C_FG, C_BG);
+  Ui_DrawStatusLine(96U, line, g_status_cache.duty, sizeof(g_status_cache.duty));
+  g_status_cache.valid = 1U;
 }
 
 static const char *Ui_GetMotorStateText(void)
