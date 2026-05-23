@@ -454,6 +454,10 @@ void MotorControl_SetDuty(float duty)
   g_duty_permyriad = MotorControl_DutyFloatToPermyriad(g_duty);
 }
 float MotorControl_GetDuty(void) { return g_duty; }
+uint16_t MotorControl_GetModulationAmplitudePermyriad(void)
+{
+  return MotorControl_DutyToAmplitudePermyriad(g_duty_permyriad);
+}
 void MotorControl_DutyUp(void) { MotorControl_SetDuty(g_duty + MOTOR_DUTY_STEP); }
 void MotorControl_DutyDown(void) { MotorControl_SetDuty(g_duty - MOTOR_DUTY_STEP); }
 

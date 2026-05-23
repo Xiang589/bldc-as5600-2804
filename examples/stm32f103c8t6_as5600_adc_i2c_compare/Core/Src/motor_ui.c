@@ -140,6 +140,16 @@ static void Ui_DrawButton(const UiButton *b)
   LCD_DrawText((uint16_t)(b->x + 10U), (uint16_t)(b->y + 6U), b->label, C_FG, b->color);
 }
 
+static void Ui_FormatDutyAmp(char *line, size_t line_size)
+{
+  uint16_t amp = MotorControl_GetModulationAmplitudePermyriad();
+
+  snprintf(line, line_size, "Duty: %u%% Amp:%u.%u%%",
+           (unsigned int)(MotorControl_GetDuty() * 100.0f),
+           (unsigned int)(amp / 100U),
+           (unsigned int)((amp / 10U) % 10U));
+}
+
 static void Cal_DrawCross(uint16_t x, uint16_t y)
 {
   LCD_FillRect((uint16_t)(x - 10U), y, 21U, 1U, C_FG);
@@ -252,7 +262,7 @@ static void Ui_DrawSetStatus(void)
   }
   else
   {
-    snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
+    snprintf(line, sizeof(line), "Spd: L%u %ums cur%u",
              (unsigned int)MotorControl_GetSpeedLevel(),
              (unsigned int)MotorControl_GetTargetPeriodMs(),
              (unsigned int)MotorControl_GetCurrentPeriodMs());
@@ -263,7 +273,7 @@ static void Ui_DrawSetStatus(void)
            MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "CLSPD" : "OPEN");
   LCD_DrawText(10U, 72U, line, C_FG, C_BG);
 
-  snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
+  Ui_FormatDutyAmp(line, sizeof(line));
   LCD_DrawText(10U, 96U, line, C_FG, C_BG);
 }
 
@@ -276,6 +286,9 @@ static const char *Ui_GetMotorStateText(void)
 
     case MOTOR_STATE_RUNNING_CLOSED_LOOP:
       return "RUN CL";
+
+    case MOTOR_STATE_STARTUP:
+      return "STARTUP";
 
     case MOTOR_STATE_FAULT:
       switch (MotorControl_GetFault())
@@ -323,12 +336,15 @@ static void Ui_DrawStatus(void)
 {
   const char *state;
   const char *dir;
+  MotorFeedbackSnapshot_t feedback;
   char line[32];
 
   if (g_status_cache.valid == 0U)
   {
     LCD_FillRect(UI_STATUS_X, UI_STATUS_AREA_Y, UI_STATUS_AREA_W, UI_STATUS_AREA_H, C_BG);
   }
+
+  MotorFeedback_GetSnapshot(&feedback);
 
   state = Ui_GetMotorStateText();
   Ui_DrawStatusValueLine(36U, "State:", state,
@@ -346,19 +362,19 @@ static void Ui_DrawStatus(void)
   }
   else
   {
-    snprintf(line, sizeof(line), "Spd: L%u %ums/%ums",
+    snprintf(line, sizeof(line), "Spd: L%u %ums cur%u",
              (unsigned int)MotorControl_GetSpeedLevel(),
              (unsigned int)MotorControl_GetTargetPeriodMs(),
              (unsigned int)MotorControl_GetCurrentPeriodMs());
   }
   Ui_DrawStatusLine(84U, line, g_status_cache.speed, sizeof(g_status_cache.speed));
 
-  snprintf(line, sizeof(line), "Duty: %u%%", (unsigned int)(MotorControl_GetDuty() * 100.0f));
+  Ui_FormatDutyAmp(line, sizeof(line));
   Ui_DrawStatusLine(108U, line, g_status_cache.duty, sizeof(g_status_cache.duty));
 
-  if (MotorFeedback_IsAngleValid() != 0U)
+  if (feedback.angle_valid != 0U)
   {
-    int32_t angle_x100 = MotorFeedback_GetAngleX100();
+    int32_t angle_x100 = feedback.angle_x100;
     snprintf(line, sizeof(line), "Angle: %ld.%02ld",
              (long)(angle_x100 / 100), (long)(angle_x100 % 100));
   }
@@ -368,9 +384,9 @@ static void Ui_DrawStatus(void)
   }
   Ui_DrawStatusLine(132U, line, g_status_cache.angle, sizeof(g_status_cache.angle));
 
-  if (MotorFeedback_IsSpeedValid() != 0U)
+  if (feedback.speed_valid != 0U)
   {
-    int32_t rpm_x10 = MotorFeedback_GetRpmX10();
+    int32_t rpm_x10 = feedback.rpm_x10;
     int32_t rpm_abs = rpm_x10;
     if (rpm_abs < 0) rpm_abs = -rpm_abs;
     snprintf(line, sizeof(line), "RPM: %s%ld.%ld",

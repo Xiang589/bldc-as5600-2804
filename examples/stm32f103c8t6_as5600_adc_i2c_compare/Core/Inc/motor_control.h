@@ -69,6 +69,7 @@ uint8_t MotorControl_GetPhaseIndex(void);
 
 void MotorControl_SetDuty(float duty);
 float MotorControl_GetDuty(void);
+uint16_t MotorControl_GetModulationAmplitudePermyriad(void);
 void MotorControl_DutyUp(void);
 void MotorControl_DutyDown(void);
 
