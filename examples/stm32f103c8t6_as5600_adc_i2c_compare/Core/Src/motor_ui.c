@@ -267,6 +267,50 @@ static void Ui_DrawSetStatus(void)
   LCD_DrawText(10U, 96U, line, C_FG, C_BG);
 }
 
+static const char *Ui_GetMotorStateText(void)
+{
+  switch (MotorControl_GetState())
+  {
+    case MOTOR_STATE_RUNNING_OPEN_LOOP:
+      return "RUN OPEN";
+
+    case MOTOR_STATE_RUNNING_CLOSED_LOOP:
+      return "RUN CL";
+
+    case MOTOR_STATE_FAULT:
+      switch (MotorControl_GetFault())
+      {
+        case MOTOR_FAULT_FEEDBACK_LOST:
+          return "FAULT FB";
+        case MOTOR_FAULT_STARTUP_FEEDBACK_TIMEOUT:
+          return "FAULT START";
+        case MOTOR_FAULT_INVALID_STATE:
+          return "FAULT INV";
+        case MOTOR_FAULT_NONE:
+        default:
+          return "FAULT";
+      }
+
+    case MOTOR_STATE_STOPPED:
+    default:
+      switch (MotorControl_GetStopReason())
+      {
+        case MOTOR_STOP_REASON_START_DENIED_NO_ANGLE:
+          return "STOP NO ANG";
+        case MOTOR_STOP_REASON_DIRECTION_CHANGED:
+          return "STOP DIR";
+        case MOTOR_STOP_REASON_MODE_CHANGED:
+          return "STOP MODE";
+        case MOTOR_STOP_REASON_FEEDBACK_LOST:
+          return "STOP FB";
+        case MOTOR_STOP_REASON_USER:
+        case MOTOR_STOP_REASON_NONE:
+        default:
+          return "STOP";
+      }
+  }
+}
+
 static void Ui_DrawConfirmScreen(void)
 {
   LCD_FillScreen(C_BG);
@@ -286,9 +330,7 @@ static void Ui_DrawStatus(void)
     LCD_FillRect(UI_STATUS_X, UI_STATUS_AREA_Y, UI_STATUS_AREA_W, UI_STATUS_AREA_H, C_BG);
   }
 
-  state = MotorControl_IsRunning()
-            ? (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "RUN CL" : "RUN OPEN")
-            : (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "STOP CL" : "STOP OPEN");
+  state = Ui_GetMotorStateText();
   Ui_DrawStatusValueLine(36U, "State:", state,
                          MotorControl_IsRunning() ? C_BTN : C_STOP,
                          g_status_cache.state, sizeof(g_status_cache.state));

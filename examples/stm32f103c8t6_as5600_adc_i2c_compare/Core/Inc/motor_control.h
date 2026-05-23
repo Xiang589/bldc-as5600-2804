@@ -17,6 +17,29 @@ typedef enum {
   MOTOR_MODE_SPEED_CLOSED_LOOP = 1
 } MotorControlMode_t;
 
+typedef enum {
+  MOTOR_STATE_STOPPED = 0,
+  MOTOR_STATE_RUNNING_OPEN_LOOP = 1,
+  MOTOR_STATE_RUNNING_CLOSED_LOOP = 2,
+  MOTOR_STATE_FAULT = 3
+} MotorControlState_t;
+
+typedef enum {
+  MOTOR_STOP_REASON_NONE = 0,
+  MOTOR_STOP_REASON_USER = 1,
+  MOTOR_STOP_REASON_DIRECTION_CHANGED = 2,
+  MOTOR_STOP_REASON_MODE_CHANGED = 3,
+  MOTOR_STOP_REASON_FEEDBACK_LOST = 4,
+  MOTOR_STOP_REASON_START_DENIED_NO_ANGLE = 5
+} MotorStopReason_t;
+
+typedef enum {
+  MOTOR_FAULT_NONE = 0,
+  MOTOR_FAULT_FEEDBACK_LOST = 1,
+  MOTOR_FAULT_STARTUP_FEEDBACK_TIMEOUT = 2,
+  MOTOR_FAULT_INVALID_STATE = 3
+} MotorFault_t;
+
 void MotorControl_Init(void);
 void MotorControl_Start(void);
 void MotorControl_Stop(void);
@@ -24,6 +47,10 @@ void MotorControl_Update(uint32_t now);
 void MotorControl_Tick1ms(void);
 
 uint8_t MotorControl_IsRunning(void);
+MotorControlState_t MotorControl_GetState(void);
+MotorStopReason_t MotorControl_GetStopReason(void);
+MotorFault_t MotorControl_GetFault(void);
+void MotorControl_ClearFault(void);
 
 void MotorControl_SetDirection(MotorDirection_t dir);
 MotorDirection_t MotorControl_GetDirection(void);

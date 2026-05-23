@@ -79,7 +79,9 @@ static const int16_t kSineLut[MOTOR_LUT_SIZE] = {
    -6393,  -5602,  -4808,  -4011,  -3212,  -2410,  -1608,   -804
 };
 
-static uint8_t g_running = 0U;
+static MotorControlState_t g_state = MOTOR_STATE_STOPPED;
+static MotorStopReason_t g_stop_reason = MOTOR_STOP_REASON_NONE;
+static MotorFault_t g_fault = MOTOR_FAULT_NONE;
 static float g_duty = MOTOR_DUTY_DEFAULT;
 static uint16_t g_duty_permyriad = (uint16_t)(MOTOR_DUTY_DEFAULT * 10000.0f);
 static MotorDirection_t g_direction = MOTOR_DIR_FWD;
@@ -149,9 +151,60 @@ static void MotorControl_ApplyOpenLoopPwm(void)
                                   MotorControl_ClampPermyriad(dw));
 }
 
+static uint8_t MotorControl_IsRunningState(MotorControlState_t state)
+{
+  return ((state == MOTOR_STATE_RUNNING_OPEN_LOOP) ||
+          (state == MOTOR_STATE_RUNNING_CLOSED_LOOP));
+}
+
+static void MotorControl_ResetRunState(uint32_t now)
+{
+  g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
+  g_cl_period_ms = g_current_period_ms;
+  g_cl_integrator = 0;
+  g_last_update_tick = now;
+  g_last_ramp_tick = now;
+  g_last_cl_tick = now;
+  g_feedback_lost_tick = 0U;
+  g_start_tick = now;
+}
+
+static void MotorControl_StopToState(MotorStopReason_t reason,
+                                     MotorFault_t fault,
+                                     MotorControlState_t next_state)
+{
+  const uint32_t now = HAL_GetTick();
+
+  MotorDriver_SetAllPwmZero();
+  MotorDriver_Disable();
+  MotorControl_ResetRunState(now);
+  g_stop_reason = reason;
+  g_fault = fault;
+  g_state = next_state;
+}
+
+static void MotorControl_StopWithReason(MotorStopReason_t reason)
+{
+  if (g_state == MOTOR_STATE_FAULT)
+  {
+    MotorDriver_SetAllPwmZero();
+    MotorDriver_Disable();
+    return;
+  }
+
+  MotorControl_StopToState(reason, g_fault, MOTOR_STATE_STOPPED);
+}
+
+static void MotorControl_StopWithFault(MotorStopReason_t reason, MotorFault_t fault)
+{
+  MotorControl_StopToState(reason, fault, MOTOR_STATE_FAULT);
+}
+
 void MotorControl_Init(void)
 {
-  g_running = 0U;
+  g_state = MOTOR_STATE_STOPPED;
+  g_stop_reason = MOTOR_STOP_REASON_NONE;
+  g_fault = MOTOR_FAULT_NONE;
   g_duty = MOTOR_DUTY_DEFAULT;
   g_duty_permyriad = MotorControl_DutyFloatToPermyriad(MOTOR_DUTY_DEFAULT);
   g_direction = MOTOR_DIR_FWD;
@@ -175,10 +228,13 @@ void MotorControl_Init(void)
 
 void MotorControl_Start(void)
 {
-  if (g_running != 0U) return;
+  if (MotorControl_IsRunning() != 0U) return;
+  if (g_fault != MOTOR_FAULT_NONE) return;
+  if (g_state != MOTOR_STATE_STOPPED) return;
 
   if ((g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP) && (MotorFeedback_IsAngleValid() == 0U))
   {
+    g_stop_reason = MOTOR_STOP_REASON_START_DENIED_NO_ANGLE;
     return;
   }
 
@@ -188,7 +244,11 @@ void MotorControl_Start(void)
   g_phase_q16 = 0U;
   MotorDriver_SetAllPwmZero();
   MotorDriver_Enable();
-  g_running = 1U;
+  g_state = (g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
+              ? MOTOR_STATE_RUNNING_CLOSED_LOOP
+              : MOTOR_STATE_RUNNING_OPEN_LOOP;
+  g_stop_reason = MOTOR_STOP_REASON_NONE;
+  g_fault = MOTOR_FAULT_NONE;
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
   g_last_cl_tick = g_last_update_tick;
@@ -199,24 +259,14 @@ void MotorControl_Start(void)
 
 void MotorControl_Stop(void)
 {
-  MotorDriver_SetAllPwmZero();
-  MotorDriver_Disable();
-  g_running = 0U;
-  g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
-  g_cl_period_ms = g_current_period_ms;
-  g_cl_integrator = 0;
-  g_last_update_tick = HAL_GetTick();
-  g_last_ramp_tick = g_last_update_tick;
-  g_last_cl_tick = g_last_update_tick;
-  g_feedback_lost_tick = 0U;
-  g_start_tick = g_last_update_tick;
+  MotorControl_StopWithReason(MOTOR_STOP_REASON_USER);
 }
 
 void MotorControl_Update(uint32_t now)
 {
   uint32_t dt_ms;
 
-  if (g_running == 0U) return;
+  if (MotorControl_IsRunning() == 0U) return;
 
   dt_ms = now - g_last_update_tick;
   if (dt_ms == 0U) return;
@@ -235,7 +285,8 @@ void MotorControl_Update(uint32_t now)
         if (g_feedback_lost_tick == 0U) g_feedback_lost_tick = now;
         else if ((now - g_feedback_lost_tick) >= MOTOR_CL_FEEDBACK_TIMEOUT_MS)
         {
-          MotorControl_Stop();
+          MotorControl_StopWithFault(MOTOR_STOP_REASON_FEEDBACK_LOST,
+                                     MOTOR_FAULT_FEEDBACK_LOST);
           return;
         }
       }
@@ -306,14 +357,37 @@ void MotorControl_Tick1ms(void)
   MotorControl_Update(HAL_GetTick());
 }
 
-uint8_t MotorControl_IsRunning(void) { return g_running; }
+uint8_t MotorControl_IsRunning(void)
+{
+  return MotorControl_IsRunningState(g_state);
+}
+
+MotorControlState_t MotorControl_GetState(void) { return g_state; }
+MotorStopReason_t MotorControl_GetStopReason(void) { return g_stop_reason; }
+MotorFault_t MotorControl_GetFault(void) { return g_fault; }
+
+void MotorControl_ClearFault(void)
+{
+  if ((g_state != MOTOR_STATE_STOPPED) && (g_state != MOTOR_STATE_FAULT))
+  {
+    return;
+  }
+
+  MotorDriver_SetAllPwmZero();
+  MotorDriver_Disable();
+  g_fault = MOTOR_FAULT_NONE;
+  if (g_state == MOTOR_STATE_FAULT)
+  {
+    g_state = MOTOR_STATE_STOPPED;
+  }
+}
 
 void MotorControl_SetDirection(MotorDirection_t dir)
 {
   if (dir != MOTOR_DIR_REV) dir = MOTOR_DIR_FWD;
-  if ((g_running != 0U) && (dir != g_direction))
+  if ((MotorControl_IsRunning() != 0U) && (dir != g_direction))
   {
-    MotorControl_Stop();
+    MotorControl_StopWithReason(MOTOR_STOP_REASON_DIRECTION_CHANGED);
   }
   g_direction = dir;
 }
@@ -322,7 +396,10 @@ MotorDirection_t MotorControl_GetDirection(void) { return g_direction; }
 
 void MotorControl_ToggleDirection(void)
 {
-  if (g_running != 0U) MotorControl_Stop();
+  if (MotorControl_IsRunning() != 0U)
+  {
+    MotorControl_StopWithReason(MOTOR_STOP_REASON_DIRECTION_CHANGED);
+  }
   g_direction = (g_direction == MOTOR_DIR_FWD) ? MOTOR_DIR_REV : MOTOR_DIR_FWD;
 }
 
@@ -360,9 +437,9 @@ void MotorControl_SetMode(MotorControlMode_t mode)
     mode = MOTOR_MODE_OPEN_LOOP;
   }
 
-  if ((g_running != 0U) && (mode != g_mode))
+  if ((MotorControl_IsRunning() != 0U) && (mode != g_mode))
   {
-    MotorControl_Stop();
+    MotorControl_StopWithReason(MOTOR_STOP_REASON_MODE_CHANGED);
   }
 
   g_mode = mode;
