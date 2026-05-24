@@ -25,7 +25,7 @@
 #define MOTOR_PHASE_SCALE            (1UL << MOTOR_PHASE_FRAC_BITS)
 #define MOTOR_PHASE_FULL             (MOTOR_LUT_SIZE * MOTOR_PHASE_SCALE)
 #define MOTOR_CL_PERIOD_MIN_MS        8U
-#define MOTOR_CL_PERIOD_MAX_MS        120U
+#define MOTOR_CL_PERIOD_MAX_MS        350U
 #define MOTOR_SPEED_PID_KP_NUM        1
 #define MOTOR_SPEED_PID_KP_DEN        30
 #define MOTOR_SPEED_PID_KI_NUM        1
@@ -369,9 +369,15 @@ void MotorControl_Update(uint32_t now)
 
   if (g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
-    MotorFeedback_GetSnapshot(&feedback);
+    uint8_t speed_fresh;
 
-    if (feedback.speed_valid == 0U)
+    MotorFeedback_GetSnapshot(&feedback);
+    speed_fresh = ((feedback.speed_valid != 0U) &&
+                   ((now - feedback.speed_update_tick) <= MOTOR_CL_FEEDBACK_TIMEOUT_MS))
+                    ? 1U
+                    : 0U;
+
+    if (speed_fresh == 0U)
     {
       g_feedback_lost_count++;
 
