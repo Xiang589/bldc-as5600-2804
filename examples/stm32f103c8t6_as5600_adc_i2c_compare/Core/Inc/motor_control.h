@@ -64,6 +64,9 @@ void MotorControl_SpeedDown(void);
 uint16_t MotorControl_GetStepPeriodMs(void);
 uint16_t MotorControl_GetTargetPeriodMs(void);
 uint16_t MotorControl_GetCurrentPeriodMs(void);
+int32_t MotorControl_GetSpeedPidErrorX10(void);
+int32_t MotorControl_GetSpeedPidOutputMs(void);
+int32_t MotorControl_GetSpeedPidIntegrator(void);
 uint32_t MotorControl_GetPhaseQ16(void);
 uint8_t MotorControl_GetPhaseIndex(void);
 
