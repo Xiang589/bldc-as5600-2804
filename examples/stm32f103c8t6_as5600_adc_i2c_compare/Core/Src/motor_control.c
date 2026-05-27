@@ -38,12 +38,12 @@
 #define MOTOR_CL_STARTUP_GRACE_MS    2000U
 
 static const uint16_t kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MAX] = {
-  300U,
-  200U,
-  120U,
-  80U,
-  50U,
-  30U
+  310U,
+  210U,
+  140U,
+  115U,
+  90U,
+  75U
 };
 static const int32_t kTargetRpmX10[MOTOR_SPEED_LEVEL_MAX] = {260, 400, 600, 800, 1000, 1200};
 
