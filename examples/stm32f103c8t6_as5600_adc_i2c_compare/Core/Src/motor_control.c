@@ -45,7 +45,7 @@ static const uint16_t kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MAX] = {
   50U,
   30U
 };
-static const int32_t kTargetRpmX10[MOTOR_SPEED_LEVEL_MAX] = {50, 100, 200, 300, 450, 600};
+static const int32_t kTargetRpmX10[MOTOR_SPEED_LEVEL_MAX] = {260, 400, 600, 800, 1000, 1200};
 
 typedef struct {
   int32_t integrator;

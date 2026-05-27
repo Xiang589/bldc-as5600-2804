@@ -280,7 +280,7 @@ static void Ui_DrawSetStatus(void)
   if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
     int32_t tr = MotorControl_GetTargetRpmX10();
-    snprintf(line, sizeof(line), "Tgt:%ld.%ld P%u",
+    snprintf(line, sizeof(line), "TgtRPM:%ld.%ld P%u",
              (long)(tr / 10),
              (long)(tr % 10),
              (unsigned int)MotorControl_GetCurrentPeriodMs());
@@ -388,7 +388,7 @@ static void Ui_DrawStatus(void)
     int32_t pid_output = MotorControl_GetSpeedPidOutputMs();
     int32_t pid_output_abs = pid_output;
     if (pid_output_abs < 0) pid_output_abs = -pid_output_abs;
-    snprintf(line, sizeof(line), "Tgt:%ld.%ld P%u O%s%ld",
+    snprintf(line, sizeof(line), "TgtRPM:%ld.%ld P%u O%s%ld",
              (long)(tr / 10),
              (long)(tr % 10),
              (unsigned int)MotorControl_GetCurrentPeriodMs(),
