@@ -16,8 +16,11 @@ typedef struct {
   uint16_t raw_angle;
   int32_t angle_x100;
   int32_t rpm_x10;
+  /* delta_raw and total_raw_turns are motor-direction aligned, not raw AS5600 direction. */
   int32_t delta_raw;
   int32_t total_raw_turns;
+  uint32_t speed_sample_seq;
+  uint32_t speed_update_tick;
   uint32_t last_ok_tick;
   uint32_t last_error_tick;
   uint32_t update_count;

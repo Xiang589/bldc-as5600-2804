@@ -50,7 +50,7 @@ typedef struct {
   char duty[24];
   char mode[16];
   char angle[24];
-  char rpm[24];
+  char rpm[32];
 } UiStatusCache;
 
 typedef enum {
@@ -280,7 +280,10 @@ static void Ui_DrawSetStatus(void)
   if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
     int32_t tr = MotorControl_GetTargetRpmX10();
-    snprintf(line, sizeof(line), "Tgt: %ld.%ldrpm", (long)(tr / 10), (long)(tr % 10));
+    snprintf(line, sizeof(line), "TgtRPM:%ld.%ld P%u",
+             (long)(tr / 10),
+             (long)(tr % 10),
+             (unsigned int)MotorControl_GetCurrentPeriodMs());
   }
   else
   {
@@ -382,7 +385,15 @@ static void Ui_DrawStatus(void)
   if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
     int32_t tr = MotorControl_GetTargetRpmX10();
-    snprintf(line, sizeof(line), "Tgt: %ld.%ldrpm", (long)(tr / 10), (long)(tr % 10));
+    int32_t pid_output = MotorControl_GetSpeedPidOutputMs();
+    int32_t pid_output_abs = pid_output;
+    if (pid_output_abs < 0) pid_output_abs = -pid_output_abs;
+    snprintf(line, sizeof(line), "TgtRPM:%ld.%ld P%u O%s%ld",
+             (long)(tr / 10),
+             (long)(tr % 10),
+             (unsigned int)MotorControl_GetCurrentPeriodMs(),
+             (pid_output < 0) ? "-" : "+",
+             (long)pid_output_abs);
   }
   else
   {
@@ -412,11 +423,26 @@ static void Ui_DrawStatus(void)
   {
     int32_t rpm_x10 = feedback.rpm_x10;
     int32_t rpm_abs = rpm_x10;
+    int32_t pid_error = MotorControl_GetSpeedPidErrorX10();
+    int32_t pid_error_abs = pid_error;
     if (rpm_abs < 0) rpm_abs = -rpm_abs;
-    snprintf(line, sizeof(line), "RPM: %s%ld.%ld",
-             (rpm_x10 < 0) ? "-" : "",
-             (long)(rpm_abs / 10),
-             (long)(rpm_abs % 10));
+    if (pid_error_abs < 0) pid_error_abs = -pid_error_abs;
+    if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
+    {
+      snprintf(line, sizeof(line), "RPM:%s%ld.%ld E:%s%ld",
+               (rpm_x10 < 0) ? "-" : "+",
+               (long)(rpm_abs / 10),
+               (long)(rpm_abs % 10),
+               (pid_error < 0) ? "-" : "+",
+               (long)pid_error_abs);
+    }
+    else
+    {
+      snprintf(line, sizeof(line), "RPM: %s%ld.%ld",
+               (rpm_x10 < 0) ? "-" : "",
+               (long)(rpm_abs / 10),
+               (long)(rpm_abs % 10));
+    }
   }
   else
   {

@@ -8,6 +8,8 @@
 #define MOTOR_FEEDBACK_I2C_RECOVERY_ERROR_THRESHOLD 5U
 #define MOTOR_FEEDBACK_I2C_RECOVERY_PERIOD_MS 500U
 #define MOTOR_FEEDBACK_I2C_RECOVERY_DELAY_MS 2U
+/* AS5600 raw delta sign is inverted so FWD motor rotation reports positive RPM. */
+#define MOTOR_FEEDBACK_DELTA_SIGN (-1)
 
 static uint8_t g_angle_valid = 0U;
 static uint8_t g_speed_valid = 0U;
@@ -17,6 +19,8 @@ static int32_t g_angle_x100 = 0;
 static int32_t g_rpm_x10 = 0;
 static int32_t g_delta_raw = 0;
 static int32_t g_total_raw_turns = 0;
+static uint32_t g_speed_sample_seq = 0U;
+static uint32_t g_speed_update_tick = 0U;
 static uint16_t g_prev_raw = 0U;
 static uint32_t g_prev_tick = 0U;
 static uint32_t g_last_angle_tick = 0U;
@@ -53,12 +57,19 @@ static void MotorFeedback_UpdateSnapshot(void)
   g_snapshot.rpm_x10 = g_rpm_x10;
   g_snapshot.delta_raw = g_delta_raw;
   g_snapshot.total_raw_turns = g_total_raw_turns;
+  g_snapshot.speed_sample_seq = g_speed_sample_seq;
+  g_snapshot.speed_update_tick = g_speed_update_tick;
   g_snapshot.last_ok_tick = g_last_ok_tick;
   g_snapshot.last_error_tick = g_last_error_tick;
   g_snapshot.update_count = g_update_count;
   g_snapshot.error_count = g_error_count;
   g_snapshot.consecutive_error_count = g_consecutive_error_count;
   g_snapshot.last_hal_status = g_last_hal_status;
+}
+
+static int32_t MotorFeedback_AlignDeltaToMotorDirection(int32_t delta_raw)
+{
+  return delta_raw * MOTOR_FEEDBACK_DELTA_SIGN;
 }
 
 static void MotorFeedback_TryRecoverI2c(uint32_t now)
@@ -92,6 +103,8 @@ void MotorFeedback_Init(void)
   g_rpm_x10 = 0;
   g_delta_raw = 0;
   g_total_raw_turns = 0;
+  g_speed_sample_seq = 0U;
+  g_speed_update_tick = 0U;
   g_prev_raw = 0U;
   g_prev_tick = HAL_GetTick();
   g_last_angle_tick = g_prev_tick;
@@ -147,6 +160,8 @@ void MotorFeedback_Update(uint32_t now)
     int32_t next_rpm_x10 = g_rpm_x10;
     int32_t next_delta_raw = g_delta_raw;
     int32_t next_total_raw_turns = g_total_raw_turns;
+    uint32_t next_speed_sample_seq = g_speed_sample_seq;
+    uint32_t next_speed_update_tick = g_speed_update_tick;
 
     if (g_has_prev == 0U)
     {
@@ -160,6 +175,7 @@ void MotorFeedback_Update(uint32_t now)
     {
       uint32_t dt_ms = now - g_prev_tick;
       int32_t delta_raw = (int32_t)raw - (int32_t)g_prev_raw;
+      int32_t motor_delta_raw;
 
       if (delta_raw > 2048)
       {
@@ -170,14 +186,17 @@ void MotorFeedback_Update(uint32_t now)
         delta_raw += 4096;
       }
 
-      next_delta_raw = delta_raw;
-      next_total_raw_turns += delta_raw;
+      motor_delta_raw = MotorFeedback_AlignDeltaToMotorDirection(delta_raw);
+      next_delta_raw = motor_delta_raw;
+      next_total_raw_turns += motor_delta_raw;
 
       if (dt_ms > 0U)
       {
-        int64_t rpm_x10 = ((int64_t)delta_raw * 600000LL) / (4096LL * (int64_t)dt_ms);
+        int64_t rpm_x10 = ((int64_t)motor_delta_raw * 600000LL) / (4096LL * (int64_t)dt_ms);
         next_rpm_x10 = (int32_t)rpm_x10;
         next_speed_valid = 1U;
+        next_speed_sample_seq++;
+        next_speed_update_tick = now;
       }
       else
       {
@@ -199,6 +218,8 @@ void MotorFeedback_Update(uint32_t now)
       g_rpm_x10 = next_rpm_x10;
       g_delta_raw = next_delta_raw;
       g_total_raw_turns = next_total_raw_turns;
+      g_speed_sample_seq = next_speed_sample_seq;
+      g_speed_update_tick = next_speed_update_tick;
       g_prev_raw = next_prev_raw;
       g_prev_tick = next_prev_tick;
       g_last_ok_tick = now;

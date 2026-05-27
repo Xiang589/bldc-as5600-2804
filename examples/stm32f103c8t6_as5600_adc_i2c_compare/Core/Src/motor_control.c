@@ -24,25 +24,35 @@
 #define MOTOR_PHASE_FRAC_BITS        16U
 #define MOTOR_PHASE_SCALE            (1UL << MOTOR_PHASE_FRAC_BITS)
 #define MOTOR_PHASE_FULL             (MOTOR_LUT_SIZE * MOTOR_PHASE_SCALE)
-#define MOTOR_CL_PERIOD_MS            100U
-#define MOTOR_CL_KP_NUM               1
-#define MOTOR_CL_KP_DEN               20
-#define MOTOR_CL_KI_NUM               1
-#define MOTOR_CL_KI_DEN               200
 #define MOTOR_CL_PERIOD_MIN_MS        8U
-#define MOTOR_CL_PERIOD_MAX_MS        120U
+#define MOTOR_CL_PERIOD_MAX_MS        350U
+#define MOTOR_SPEED_PID_KP_NUM        1
+#define MOTOR_SPEED_PID_KP_DEN        30
+#define MOTOR_SPEED_PID_KI_NUM        1
+#define MOTOR_SPEED_PID_KI_DEN        600
+#define MOTOR_SPEED_PID_KD_NUM        0
+#define MOTOR_SPEED_PID_KD_DEN        1
+#define MOTOR_SPEED_PID_INTEGRATOR_LIMIT 6000
+#define MOTOR_SPEED_PID_OUTPUT_LIMIT_MS 25
 #define MOTOR_CL_FEEDBACK_TIMEOUT_MS  500U
 #define MOTOR_CL_STARTUP_GRACE_MS    2000U
 
 static const uint16_t kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MAX] = {
-  300U,
-  200U,
-  120U,
-  80U,
-  50U,
-  30U
+  310U,
+  210U,
+  140U,
+  115U,
+  90U,
+  75U
 };
-static const int32_t kTargetRpmX10[MOTOR_SPEED_LEVEL_MAX] = {50, 100, 200, 300, 450, 600};
+static const int32_t kTargetRpmX10[MOTOR_SPEED_LEVEL_MAX] = {260, 400, 600, 800, 1000, 1200};
+
+typedef struct {
+  int32_t integrator;
+  int32_t prev_error;
+  int32_t error;
+  int32_t output;
+} MotorSpeedPid_t;
 
 static const int16_t kSineLut[MOTOR_LUT_SIZE] = {
        0,    804,   1608,   2410,   3212,   4011,   4808,   5602,
@@ -92,8 +102,9 @@ static uint32_t g_phase_q16 = 0U;
 static uint32_t g_last_update_tick = 0U;
 static uint32_t g_last_ramp_tick = 0U;
 static MotorControlMode_t g_mode = MOTOR_MODE_OPEN_LOOP;
-static int32_t g_cl_integrator = 0;
-static uint32_t g_last_cl_tick = 0U;
+static MotorSpeedPid_t g_speed_pid;
+static uint32_t g_last_pid_speed_sample_seq = 0U;
+static uint8_t g_speed_pid_wait_new_sample = 1U;
 static uint16_t g_cl_period_ms = 80U;
 static uint32_t g_feedback_lost_tick = 0U;
 static uint32_t g_startup_start_tick = 0U;
@@ -113,6 +124,79 @@ static uint8_t MotorControl_ClampSpeedLevel(uint8_t level)
   if (level < MOTOR_SPEED_LEVEL_MIN) return MOTOR_SPEED_LEVEL_MIN;
   if (level > MOTOR_SPEED_LEVEL_MAX) return MOTOR_SPEED_LEVEL_MAX;
   return level;
+}
+
+static void MotorSpeedPid_Reset(void)
+{
+  g_speed_pid.integrator = 0;
+  g_speed_pid.prev_error = 0;
+  g_speed_pid.error = 0;
+  g_speed_pid.output = 0;
+  g_last_pid_speed_sample_seq = 0U;
+  g_speed_pid_wait_new_sample = 1U;
+}
+
+static int32_t MotorSpeedPid_ClampI32(int32_t value, int32_t min_value, int32_t max_value)
+{
+  if (value < min_value) return min_value;
+  if (value > max_value) return max_value;
+  return value;
+}
+
+static int32_t MotorSpeedPid_Update(int32_t error, uint16_t base_period_ms)
+{
+  int32_t proposed_integrator;
+  int32_t derivative;
+  int32_t output_unclamped;
+  int32_t output_clamped;
+  int32_t period_after_output;
+  uint8_t hold_integrator = 0U;
+
+  proposed_integrator = MotorSpeedPid_ClampI32(g_speed_pid.integrator + error,
+                                               -MOTOR_SPEED_PID_INTEGRATOR_LIMIT,
+                                               MOTOR_SPEED_PID_INTEGRATOR_LIMIT);
+  derivative = error - g_speed_pid.prev_error;
+  output_unclamped = ((error * MOTOR_SPEED_PID_KP_NUM) / MOTOR_SPEED_PID_KP_DEN) +
+                     ((proposed_integrator * MOTOR_SPEED_PID_KI_NUM) / MOTOR_SPEED_PID_KI_DEN) +
+                     ((derivative * MOTOR_SPEED_PID_KD_NUM) / MOTOR_SPEED_PID_KD_DEN);
+  output_clamped = MotorSpeedPid_ClampI32(output_unclamped,
+                                          -MOTOR_SPEED_PID_OUTPUT_LIMIT_MS,
+                                          MOTOR_SPEED_PID_OUTPUT_LIMIT_MS);
+  period_after_output = (int32_t)base_period_ms - output_clamped;
+
+  if ((output_unclamped > MOTOR_SPEED_PID_OUTPUT_LIMIT_MS) && (error > 0))
+  {
+    hold_integrator = 1U;
+  }
+  else if ((output_unclamped < -MOTOR_SPEED_PID_OUTPUT_LIMIT_MS) && (error < 0))
+  {
+    hold_integrator = 1U;
+  }
+  else if ((period_after_output <= (int32_t)MOTOR_CL_PERIOD_MIN_MS) && (error > 0))
+  {
+    hold_integrator = 1U;
+  }
+  else if ((period_after_output >= (int32_t)MOTOR_CL_PERIOD_MAX_MS) && (error < 0))
+  {
+    hold_integrator = 1U;
+  }
+
+  if (hold_integrator != 0U)
+  {
+    proposed_integrator = g_speed_pid.integrator;
+    output_unclamped = ((error * MOTOR_SPEED_PID_KP_NUM) / MOTOR_SPEED_PID_KP_DEN) +
+                       ((proposed_integrator * MOTOR_SPEED_PID_KI_NUM) / MOTOR_SPEED_PID_KI_DEN) +
+                       ((derivative * MOTOR_SPEED_PID_KD_NUM) / MOTOR_SPEED_PID_KD_DEN);
+    output_clamped = MotorSpeedPid_ClampI32(output_unclamped,
+                                            -MOTOR_SPEED_PID_OUTPUT_LIMIT_MS,
+                                            MOTOR_SPEED_PID_OUTPUT_LIMIT_MS);
+  }
+
+  g_speed_pid.integrator = proposed_integrator;
+  g_speed_pid.prev_error = error;
+  g_speed_pid.error = error;
+  g_speed_pid.output = output_clamped;
+  return output_clamped;
 }
 
 static uint16_t MotorControl_DutyToAmplitudePermyriad(uint16_t duty_permyriad)
@@ -166,16 +250,15 @@ static void MotorControl_ResetClosedLoopTracking(uint32_t startup_tick)
   g_ever_had_valid_speed_feedback = 0U;
   g_feedback_lost_tick = 0U;
   g_feedback_lost_count = 0U;
+  MotorSpeedPid_Reset();
 }
 
 static void MotorControl_ResetRunState(uint32_t now)
 {
   g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
   g_cl_period_ms = g_current_period_ms;
-  g_cl_integrator = 0;
   g_last_update_tick = now;
   g_last_ramp_tick = now;
-  g_last_cl_tick = now;
   MotorControl_ResetClosedLoopTracking(0U);
 }
 
@@ -226,8 +309,6 @@ void MotorControl_Init(void)
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
   g_mode = MOTOR_MODE_OPEN_LOOP;
-  g_cl_integrator = 0;
-  g_last_cl_tick = g_last_update_tick;
   g_cl_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
   MotorControl_ResetClosedLoopTracking(0U);
 
@@ -254,7 +335,6 @@ void MotorControl_Start(void)
 
   g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
   g_cl_period_ms = g_current_period_ms;
-  g_cl_integrator = 0;
   g_phase_q16 = 0U;
   MotorDriver_SetAllPwmZero();
   MotorDriver_Enable();
@@ -265,7 +345,6 @@ void MotorControl_Start(void)
   g_fault = MOTOR_FAULT_NONE;
   g_last_update_tick = HAL_GetTick();
   g_last_ramp_tick = g_last_update_tick;
-  g_last_cl_tick = g_last_update_tick;
   MotorControl_ResetClosedLoopTracking((g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
                                          ? g_last_update_tick
                                          : 0U);
@@ -290,9 +369,15 @@ void MotorControl_Update(uint32_t now)
 
   if (g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
-    MotorFeedback_GetSnapshot(&feedback);
+    uint8_t speed_fresh;
 
-    if (feedback.speed_valid == 0U)
+    MotorFeedback_GetSnapshot(&feedback);
+    speed_fresh = ((feedback.speed_valid != 0U) &&
+                   ((now - feedback.speed_update_tick) <= MOTOR_CL_FEEDBACK_TIMEOUT_MS))
+                    ? 1U
+                    : 0U;
+
+    if (speed_fresh == 0U)
     {
       g_feedback_lost_count++;
 
@@ -328,26 +413,27 @@ void MotorControl_Update(uint32_t now)
       g_ever_had_valid_speed_feedback = 1U;
       g_feedback_lost_tick = 0U;
       g_feedback_lost_count = 0U;
-      if ((now - g_last_cl_tick) >= MOTOR_CL_PERIOD_MS)
+      if (g_speed_pid_wait_new_sample != 0U)
       {
-        int32_t target = kTargetRpmX10[g_target_speed_level - 1U];
-        int32_t actual = feedback.rpm_x10;
+        g_last_pid_speed_sample_seq = feedback.speed_sample_seq;
+        g_speed_pid_wait_new_sample = 0U;
+      }
+      else if (feedback.speed_sample_seq != g_last_pid_speed_sample_seq)
+      {
+        int32_t target_abs = kTargetRpmX10[g_target_speed_level - 1U];
+        int32_t actual_abs = feedback.rpm_x10;
         int32_t err;
-        int32_t adjust;
+        int32_t pid_output;
         int32_t np;
-        if (actual < 0) actual = -actual;
-        err = target - actual;
-        g_cl_integrator += err;
-        if (g_cl_integrator > 5000) g_cl_integrator = 5000;
-        if (g_cl_integrator < -5000) g_cl_integrator = -5000;
-        adjust = (err * MOTOR_CL_KP_NUM) / MOTOR_CL_KP_DEN +
-                 (g_cl_integrator * MOTOR_CL_KI_NUM) / MOTOR_CL_KI_DEN;
-        np = (int32_t)g_target_period_ms - adjust;
+        if (actual_abs < 0) actual_abs = -actual_abs;
+        err = target_abs - actual_abs;
+        pid_output = MotorSpeedPid_Update(err, g_target_period_ms);
+        np = (int32_t)g_target_period_ms - pid_output;
         if (np < (int32_t)MOTOR_CL_PERIOD_MIN_MS) np = MOTOR_CL_PERIOD_MIN_MS;
         if (np > (int32_t)MOTOR_CL_PERIOD_MAX_MS) np = MOTOR_CL_PERIOD_MAX_MS;
         g_cl_period_ms = (uint16_t)np;
         g_current_period_ms = g_cl_period_ms;
-        g_last_cl_tick = now;
+        g_last_pid_speed_sample_seq = feedback.speed_sample_seq;
       }
     }
   }
@@ -424,6 +510,10 @@ void MotorControl_SetDirection(MotorDirection_t dir)
   {
     MotorControl_StopWithReason(MOTOR_STOP_REASON_DIRECTION_CHANGED);
   }
+  else if (dir != g_direction)
+  {
+    MotorControl_ResetClosedLoopTracking(0U);
+  }
   g_direction = dir;
 }
 
@@ -435,12 +525,21 @@ void MotorControl_ToggleDirection(void)
   {
     MotorControl_StopWithReason(MOTOR_STOP_REASON_DIRECTION_CHANGED);
   }
+  else
+  {
+    MotorControl_ResetClosedLoopTracking(0U);
+  }
   g_direction = (g_direction == MOTOR_DIR_FWD) ? MOTOR_DIR_REV : MOTOR_DIR_FWD;
 }
 
 void MotorControl_SetSpeedLevel(uint8_t level)
 {
-  g_target_speed_level = MotorControl_ClampSpeedLevel(level);
+  uint8_t next_level = MotorControl_ClampSpeedLevel(level);
+  if (next_level != g_target_speed_level)
+  {
+    MotorSpeedPid_Reset();
+  }
+  g_target_speed_level = next_level;
   g_target_period_ms = kSpeedPeriodMs[g_target_speed_level - 1U];
 }
 uint8_t MotorControl_GetSpeedLevel(void) { return g_target_speed_level; }
@@ -463,6 +562,9 @@ void MotorControl_DutyDown(void) { MotorControl_SetDuty(g_duty - MOTOR_DUTY_STEP
 
 uint16_t MotorControl_GetTargetPeriodMs(void) { return g_target_period_ms; }
 uint16_t MotorControl_GetCurrentPeriodMs(void) { return g_current_period_ms; }
+int32_t MotorControl_GetSpeedPidErrorX10(void) { return g_speed_pid.error; }
+int32_t MotorControl_GetSpeedPidOutputMs(void) { return g_speed_pid.output; }
+int32_t MotorControl_GetSpeedPidIntegrator(void) { return g_speed_pid.integrator; }
 uint32_t MotorControl_GetPhaseQ16(void) { return g_phase_q16; }
 uint8_t MotorControl_GetPhaseIndex(void)
 {
@@ -479,6 +581,10 @@ void MotorControl_SetMode(MotorControlMode_t mode)
   if ((MotorControl_IsRunning() != 0U) && (mode != g_mode))
   {
     MotorControl_StopWithReason(MOTOR_STOP_REASON_MODE_CHANGED);
+  }
+  else if (mode != g_mode)
+  {
+    MotorControl_ResetClosedLoopTracking(0U);
   }
 
   g_mode = mode;
