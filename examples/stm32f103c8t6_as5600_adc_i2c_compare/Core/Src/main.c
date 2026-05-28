@@ -31,9 +31,6 @@
 /* USER CODE BEGIN Includes */
 /* printf 依赖标准输入输出接口，这里用于串口打印调试信息。 */
 #include <stdio.h>
-#include <stdlib.h>
-/* AS5600 驱动头文件，提供 I2C 读取角度/状态接口。 */
-#include "as5600.h"
 #include "motor_driver.h"
 #include "motor_control.h"
 #include "motor_ui.h"
@@ -47,11 +44,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define MOTOR_TEST_DURATION_MS 3000U
-#define MOTOR_TEST_STEP_MS     20U
-#define ENABLE_PERIODIC_SERIAL_PRINT 0U
-#define SERIAL_PRINT_PERIOD_MS 1000U
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -62,25 +54,6 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-/* 基于 HAL_GetTick() 的非阻塞定时基准：
- * - g_led_tick 控制 LED 心跳闪烁
- * - g_print_tick 控制串口周期打印
- * 这样写比 HAL_Delay() 更利于在主循环里并行处理多任务。 */
-static uint32_t g_led_tick = 0U;
-static uint32_t g_print_tick = 0U;
-static uint8_t g_motor_test_active = 0U;
-static uint8_t g_motor_test_step = 0U;
-static uint32_t g_motor_test_start_tick = 0U;
-static uint32_t g_motor_test_step_tick = 0U;
-
-static const float kMotorTestDutyTable[6][3] = {
-  {0.60f, 0.40f, 0.50f},
-  {0.60f, 0.50f, 0.40f},
-  {0.50f, 0.60f, 0.40f},
-  {0.40f, 0.60f, 0.50f},
-  {0.40f, 0.50f, 0.60f},
-  {0.50f, 0.40f, 0.60f},
-};
 
 /* USER CODE END PV */
 
@@ -88,13 +61,6 @@ static const float kMotorTestDutyTable[6][3] = {
 void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
-static HAL_StatusTypeDef Read_AdcRaw(uint16_t *adc_raw);
-static float Angle_ErrorDeg(float adc_angle, float i2c_angle);
-static void MotorTest_Start(uint32_t now);
-static void MotorTest_Stop(void);
-static void MotorTest_Update(uint32_t now);
-static void MotorTest_HandleUartCommand(uint32_t now);
-
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -117,128 +83,6 @@ int _write(int file, char *ptr, int len)
   HAL_UART_Transmit(&huart2, (uint8_t *)ptr, len, 100U);
   return len;
 }
-
-static HAL_StatusTypeDef Read_AdcRaw(uint16_t *adc_raw)
-{
-  /* 防御式编程：先检查输出指针。 */
-  if (adc_raw == NULL)
-  {
-    return HAL_ERROR;
-  }
-
-  /* ADC 单次采样流程第 1 步：启动 ADC。 */
-  if (HAL_ADC_Start(&hadc1) != HAL_OK)
-  {
-    return HAL_ERROR;
-  }
-
-  /* 第 2 步：等待转换完成。
-   * timeout=10ms 表示最多阻塞等待 10ms。 */
-  HAL_StatusTypeDef ret = HAL_ADC_PollForConversion(&hadc1, 10U);
-  if (ret != HAL_OK)
-  {
-    /* 等待失败也要 Stop，避免 ADC 保持在不期望状态。 */
-    (void)HAL_ADC_Stop(&hadc1);
-    return ret;
-  }
-
-  /* 第 3 步：读取转换结果（12 位，0~4095）。 */
-  *adc_raw = (uint16_t)HAL_ADC_GetValue(&hadc1);
-
-  /* 第 4 步：停止 ADC，完成一次“单次采样”闭环。 */
-  if (HAL_ADC_Stop(&hadc1) != HAL_OK)
-  {
-    return HAL_ERROR;
-  }
-
-  return HAL_OK;
-}
-
-static float Angle_ErrorDeg(float adc_angle, float i2c_angle)
-{
-  /* 先计算原始差值。 */
-  float error = adc_angle - i2c_angle;
-
-  /* 角度是环形量，误差要折叠到 [-180, +180]：
-   * 例如 359° 与 1° 实际误差应为 -2° 或 +2°，而不是 358°。 */
-  while (error > 180.0f)
-  {
-    error -= 360.0f;
-  }
-  while (error < -180.0f)
-  {
-    error += 360.0f;
-  }
-
-  return error;
-}
-
-static void MotorTest_Start(uint32_t now)
-{
-  MotorDriver_SetAllPwmZero();
-  g_motor_test_active = 1U;
-  g_motor_test_start_tick = now;
-  g_motor_test_step_tick = now;
-  g_motor_test_step = 0U;
-  MotorDriver_Enable();
-  printf("[MOTOR] open-loop test start\r\n");
-}
-
-static void MotorTest_Stop(void)
-{
-  MotorDriver_SetAllPwmZero();
-  MotorDriver_Disable();
-  g_motor_test_active = 0U;
-  printf("[MOTOR] open-loop test stop\r\n");
-}
-
-static void MotorTest_Update(uint32_t now)
-{
-  if (g_motor_test_active == 0U)
-  {
-    return;
-  }
-
-  if ((now - g_motor_test_start_tick) >= MOTOR_TEST_DURATION_MS)
-  {
-    MotorTest_Stop();
-    return;
-  }
-
-  if ((now - g_motor_test_step_tick) >= MOTOR_TEST_STEP_MS)
-  {
-    MotorDriver_SetPwmDuty(kMotorTestDutyTable[g_motor_test_step][0],
-                           kMotorTestDutyTable[g_motor_test_step][1],
-                           kMotorTestDutyTable[g_motor_test_step][2]);
-    g_motor_test_step = (uint8_t)((g_motor_test_step + 1U) % 6U);
-    g_motor_test_step_tick = now;
-  }
-}
-
-static void MotorTest_HandleUartCommand(uint32_t now)
-{
-  uint8_t rx = 0U;
-
-  /* HAL_UART_Receive 是 HAL 的阻塞式接收 API。
-   * 这里 timeout=0U，表示“当前时刻立即尝试一次”，没有数据就立刻返回，
-   * 不会在此处长时间等待，因此整体效果是主循环里的轮询式接收。 */
-  /* 每次只读 1 字节，适合简单单字符命令调试，不适合高速/大量/不定长数据流。
-   * 后续学习可扩展到 HAL_UART_Receive_IT 或 HAL_UARTEx_ReceiveToIdle_DMA。 */
-  if (HAL_UART_Receive(&huart2, &rx, 1U, 0U) == HAL_OK)
-  {
-    /* 收到 't'：启动 3 秒开环测试流程。 */
-    if (rx == 't')
-    {
-      MotorTest_Start(now);
-    }
-    /* 收到 'x'：立即停止测试并回到安全状态。 */
-    else if (rx == 'x')
-    {
-      MotorTest_Stop();
-    }
-  }
-}
-
 
 /* USER CODE END 0 */
 
@@ -298,10 +142,6 @@ int main(void)
   }
 
   printf("AS5600 ADC/I2C compare start\r\n");
-  /* 从当前系统 tick 开始计时，避免初次比较时出现异常大时间差。 */
-  g_led_tick = HAL_GetTick();
-  g_print_tick = HAL_GetTick();
-
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -321,73 +161,6 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     Error_Handler();
-#if 0
-    /* HAL_GetTick() 返回系统运行毫秒数，是主循环非阻塞调度的基础。 */
-    uint32_t now = HAL_GetTick();
-
-    /* 每轮主循环都检查一次串口命令，无需用 HAL_Delay 阻塞等待串口数据。 */
-    MotorUi_Update(now);
-
-    /* 每 500ms 翻转 LED，作为“程序仍在运行”的心跳指示。 */
-    if ((now - g_led_tick) >= 500U)
-    {
-      HAL_GPIO_TogglePin(PC13_RUN_LED_GPIO_Port, PC13_RUN_LED_Pin);
-      g_led_tick = now;
-    }
-
-#if ENABLE_PERIODIC_SERIAL_PRINT
-    /* 串口周期打印可开关，默认关闭以降低阻塞对触摸调试的影响。 */
-    if ((now - g_print_tick) >= SERIAL_PRINT_PERIOD_MS)
-    {
-      uint16_t adc_raw = 0U;
-      uint16_t i2c_raw = 0U;
-      float adc_angle = 0.0f;
-      float i2c_angle = 0.0f;
-      float error = 0.0f;
-      int32_t adc_angle_x100 = 0;
-      int32_t i2c_angle_x100 = 0;
-      int32_t error_x100 = 0;
-      /* 读取流程：
-       * 1) ADC 读模拟角度电压对应的原始值
-       * 2) I2C 读 AS5600 的 RAW_ANGLE */
-      HAL_StatusTypeDef adc_ret = Read_AdcRaw(&adc_raw);
-      HAL_StatusTypeDef i2c_ret = AS5600_ReadRawAngle(&hi2c1, &i2c_raw);
-
-      if (adc_ret != HAL_OK)
-      {
-        printf("[ERR] ADC read failed, ret=%d\r\n", adc_ret);
-      }
-
-      if (i2c_ret != HAL_OK)
-      {
-        printf("[ERR] AS5600 I2C read failed, ret=%d, i2c_err=0x%08lX\r\n", i2c_ret, hi2c1.ErrorCode);
-      }
-
-      if ((adc_ret == HAL_OK) && (i2c_ret == HAL_OK))
-      {
-        /* STM32F103 ADC 为 12 位：0~4095 -> 0~360 度。 */
-        adc_angle = ((float)adc_raw * 360.0f) / 4095.0f;
-        /* AS5600 也是 12 位，使用驱动提供的统一换算函数。 */
-        i2c_angle = AS5600_RawToDegree(i2c_raw);
-        /* 计算环形角度误差（限制在 -180~+180 度）。 */
-        error = Angle_ErrorDeg(adc_angle, i2c_angle);
-
-        /* 用“角度×100”的整数打印，规避部分嵌入式环境 float printf 额外链接配置问题。
-         * 例如 12345 表示 123.45 度。 */
-        adc_angle_x100 = (int32_t)(adc_angle * 100.0f);
-        i2c_angle_x100 = (int32_t)(i2c_angle * 100.0f);
-        error_x100 = (int32_t)(error * 100.0f);
-
-        printf("ADC: %ld.%02ld deg, AS5600: %ld.%02ld deg, ERR: %ld.%02ld deg\r\n",
-               adc_angle_x100 / 100, labs(adc_angle_x100 % 100),
-               i2c_angle_x100 / 100, labs(i2c_angle_x100 % 100),
-               error_x100 / 100, labs(error_x100 % 100));
-      }
-
-      g_print_tick = now;
-    }
-#endif
-#endif /* legacy super-loop is handled by FreeRTOS tasks */
   }
   /* USER CODE END 3 */
 }

@@ -37,6 +37,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define ENABLE_RTOS_STACK_MONITOR 0U
 
 /* USER CODE END PD */
 
@@ -73,6 +74,9 @@ const osThreadAttr_t HeartbeatTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+#if ENABLE_RTOS_STACK_MONITOR
+static void RtosStackMonitor_Sample(void);
+#endif
 
 /* USER CODE END FunctionPrototypes */
 
@@ -139,12 +143,14 @@ void StartControlTask(void *argument)
 {
   /* USER CODE BEGIN StartControlTask */
   (void)argument;
+  uint32_t wake_tick = osKernelGetTickCount();
 
   /* Infinite loop */
   for(;;)
   {
+    wake_tick += 1U;
     MotorControl_Tick1ms();
-    osDelay(1);
+    (void)osDelayUntil(wake_tick);
   }
   /* USER CODE END StartControlTask */
 }
@@ -186,6 +192,9 @@ void StartHeartbeatTask(void *argument)
   for(;;)
   {
     HAL_GPIO_TogglePin(PC13_RUN_LED_GPIO_Port, PC13_RUN_LED_Pin);
+#if ENABLE_RTOS_STACK_MONITOR
+    RtosStackMonitor_Sample();
+#endif
     osDelay(500);
   }
   /* USER CODE END StartHeartbeatTask */
@@ -193,5 +202,17 @@ void StartHeartbeatTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+#if ENABLE_RTOS_STACK_MONITOR
+static void RtosStackMonitor_Sample(void)
+{
+  volatile UBaseType_t control_stack_words = uxTaskGetStackHighWaterMark(ControlTaskHandle);
+  volatile UBaseType_t ui_stack_words = uxTaskGetStackHighWaterMark(UITaskHandle);
+  volatile UBaseType_t heartbeat_stack_words = uxTaskGetStackHighWaterMark(HeartbeatTaskHandle);
+
+  (void)control_stack_words;
+  (void)ui_stack_words;
+  (void)heartbeat_stack_words;
+}
+#endif
 
 /* USER CODE END Application */
