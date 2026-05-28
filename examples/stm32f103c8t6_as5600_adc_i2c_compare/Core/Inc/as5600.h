@@ -12,6 +12,8 @@ extern "C" {
 #define AS5600_ADDR          (0x36U << 1)
 /* 状态寄存器：可用于判断磁铁是否存在以及磁场强弱状态。 */
 #define AS5600_REG_STATUS    0x0BU
+#define AS5600_REG_AGC       0x1AU
+#define AS5600_REG_MAGNITUDE 0x1BU
 /* 原始角度寄存器：输出未经零点/最大角配置处理的 12 位角度值。 */
 #define AS5600_REG_RAW_ANGLE 0x0CU
 /* 角度寄存器：输出经过 AS5600 内部映射处理后的 12 位角度值。 */
@@ -19,6 +21,10 @@ extern "C" {
 
 /* HAL I2C 阻塞读取的超时时间，单位毫秒。 */
 #define AS5600_I2C_TIMEOUT_MS 100U
+
+#define AS5600_STATUS_MH     0x08U
+#define AS5600_STATUS_ML     0x10U
+#define AS5600_STATUS_MD     0x20U
 
 /**
  * @brief  读取 AS5600 的 RAW_ANGLE 原始角度寄存器。
@@ -44,6 +50,8 @@ HAL_StatusTypeDef AS5600_ReadAngle(I2C_HandleTypeDef *hi2c, uint16_t *angle);
  * @note   本驱动不解析具体 bit，后续可在上层按需求扩展状态位解析。
  */
 HAL_StatusTypeDef AS5600_ReadStatus(I2C_HandleTypeDef *hi2c, uint8_t *status);
+HAL_StatusTypeDef AS5600_ReadAgc(I2C_HandleTypeDef *hi2c, uint8_t *agc);
+HAL_StatusTypeDef AS5600_ReadMagnitude(I2C_HandleTypeDef *hi2c, uint16_t *magnitude);
 /**
  * @brief  将 12 位角度计数换算为角度值（度）。
  * @param  raw 原始计数，典型范围 0~4095。

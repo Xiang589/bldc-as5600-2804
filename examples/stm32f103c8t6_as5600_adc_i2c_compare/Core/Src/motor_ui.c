@@ -172,6 +172,24 @@ static void Ui_FormatDutyAmp(char *line, size_t line_size)
            (unsigned int)((amp / 10U) % 10U));
 }
 
+static const char *Ui_GetModeText(void)
+{
+  switch (MotorControl_GetMode())
+  {
+    case MOTOR_MODE_SPEED_CLOSED_LOOP:
+      return "CLSPD";
+    case MOTOR_MODE_FOC_VOLTAGE:
+      return "FOCV";
+    case MOTOR_MODE_FOC_VELOCITY:
+      return "FOCSPD";
+    case MOTOR_MODE_FOC_POSITION:
+      return "FOCPOS";
+    case MOTOR_MODE_OPEN_LOOP:
+    default:
+      return "OPEN";
+  }
+}
+
 static void Cal_DrawCross(uint16_t x, uint16_t y)
 {
   LCD_FillRect((uint16_t)(x - 10U), y, 21U, 1U, C_FG);
@@ -285,6 +303,30 @@ static void Ui_DrawSetStatus(void)
              (long)(tr % 10),
              (unsigned int)MotorControl_GetCurrentPeriodMs());
   }
+  else if (MotorControl_GetMode() == MOTOR_MODE_FOC_VOLTAGE)
+  {
+    snprintf(line, sizeof(line), "FocV:%ldmV Uq:%ld",
+             (long)MotorControl_GetFocVoltageTargetMv(),
+             (long)MotorControl_GetFocUqMv());
+  }
+  else if (MotorControl_GetMode() == MOTOR_MODE_FOC_VELOCITY)
+  {
+    int32_t tr = MotorControl_GetTargetRpmX10();
+    snprintf(line, sizeof(line), "FocRPM:%ld.%ld Uq:%ld",
+             (long)(tr / 10),
+             (long)(tr % 10),
+             (long)MotorControl_GetFocUqMv());
+  }
+  else if (MotorControl_GetMode() == MOTOR_MODE_FOC_POSITION)
+  {
+    int32_t pos = MotorControl_GetTargetPositionDegX10();
+    int32_t pos_abs = pos;
+    if (pos_abs < 0) pos_abs = -pos_abs;
+    snprintf(line, sizeof(line), "PosT:%s%ld.%ld",
+             (pos < 0) ? "-" : "",
+             (long)(pos_abs / 10),
+             (long)(pos_abs % 10));
+  }
   else
   {
     snprintf(line, sizeof(line), "Spd: L%u %ums cur%u",
@@ -294,8 +336,7 @@ static void Ui_DrawSetStatus(void)
   }
   Ui_DrawStatusLine(48U, line, g_status_cache.speed, sizeof(g_status_cache.speed));
 
-  snprintf(line, sizeof(line), "Mode: %s",
-           MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP ? "CLSPD" : "OPEN");
+  snprintf(line, sizeof(line), "Mode: %s", Ui_GetModeText());
   Ui_DrawStatusLine(72U, line, g_status_cache.mode, sizeof(g_status_cache.mode));
 
   Ui_FormatDutyAmp(line, sizeof(line));
@@ -313,8 +354,20 @@ static const char *Ui_GetMotorStateText(void)
     case MOTOR_STATE_RUNNING_CLOSED_LOOP:
       return "RUN CL";
 
+    case MOTOR_STATE_RUNNING_FOC_VOLTAGE:
+      return "RUN FOCV";
+
+    case MOTOR_STATE_RUNNING_FOC_VELOCITY:
+      return "RUN FOCSPD";
+
+    case MOTOR_STATE_RUNNING_FOC_POSITION:
+      return "RUN FOCPOS";
+
     case MOTOR_STATE_STARTUP:
       return "STARTUP";
+
+    case MOTOR_STATE_CALIBRATION:
+      return "CAL FOC";
 
     case MOTOR_STATE_FAULT:
       switch (MotorControl_GetFault())
@@ -325,6 +378,10 @@ static const char *Ui_GetMotorStateText(void)
           return "FAULT START";
         case MOTOR_FAULT_INVALID_STATE:
           return "FAULT INV";
+        case MOTOR_FAULT_SENSOR_DIAG:
+          return "FAULT MAG";
+        case MOTOR_FAULT_ANGLE_STALE:
+          return "FAULT ANG";
         case MOTOR_FAULT_NONE:
         default:
           return "FAULT";
@@ -336,6 +393,8 @@ static const char *Ui_GetMotorStateText(void)
       {
         case MOTOR_STOP_REASON_START_DENIED_NO_ANGLE:
           return "STOP NO ANG";
+        case MOTOR_STOP_REASON_START_DENIED_SENSOR_DIAG:
+          return "STOP MAG";
         case MOTOR_STOP_REASON_DIRECTION_CHANGED:
           return "STOP DIR";
         case MOTOR_STOP_REASON_MODE_CHANGED:
@@ -395,6 +454,37 @@ static void Ui_DrawStatus(void)
              (pid_output < 0) ? "-" : "+",
              (long)pid_output_abs);
   }
+  else if (MotorControl_GetMode() == MOTOR_MODE_FOC_VOLTAGE)
+  {
+    snprintf(line, sizeof(line), "FocV:%ld Uq:%ld Z:%u",
+             (long)MotorControl_GetFocVoltageTargetMv(),
+             (long)MotorControl_GetFocUqMv(),
+             (unsigned int)MotorControl_IsFocZeroCalibrated());
+  }
+  else if (MotorControl_GetMode() == MOTOR_MODE_FOC_VELOCITY)
+  {
+    int32_t tr = MotorControl_GetTargetRpmX10();
+    snprintf(line, sizeof(line), "FocRPM:%ld.%ld Uq:%ld",
+             (long)(tr / 10),
+             (long)(tr % 10),
+             (long)MotorControl_GetFocUqMv());
+  }
+  else if (MotorControl_GetMode() == MOTOR_MODE_FOC_POSITION)
+  {
+    int32_t pos = MotorControl_GetTargetPositionDegX10();
+    int32_t cur = MotorControl_GetPositionDegX10();
+    int32_t pos_abs = pos;
+    int32_t cur_abs = cur;
+    if (pos_abs < 0) pos_abs = -pos_abs;
+    if (cur_abs < 0) cur_abs = -cur_abs;
+    snprintf(line, sizeof(line), "PosT:%s%ld.%ld P:%s%ld.%ld",
+             (pos < 0) ? "-" : "",
+             (long)(pos_abs / 10),
+             (long)(pos_abs % 10),
+             (cur < 0) ? "-" : "",
+             (long)(cur_abs / 10),
+             (long)(cur_abs % 10));
+  }
   else
   {
     snprintf(line, sizeof(line), "Spd: L%u %ums cur%u",
@@ -435,6 +525,28 @@ static void Ui_DrawStatus(void)
                (long)(rpm_abs % 10),
                (pid_error < 0) ? "-" : "+",
                (long)pid_error_abs);
+    }
+    else if ((MotorControl_GetMode() == MOTOR_MODE_FOC_VELOCITY) ||
+             (MotorControl_GetMode() == MOTOR_MODE_FOC_POSITION))
+    {
+      int32_t foc_err = MotorControl_GetFocVelocityErrorX10();
+      int32_t foc_err_abs = foc_err;
+      if (foc_err_abs < 0) foc_err_abs = -foc_err_abs;
+      snprintf(line, sizeof(line), "RPM:%s%ld.%ld E:%s%ld.%ld",
+               (rpm_x10 < 0) ? "-" : "+",
+               (long)(rpm_abs / 10),
+               (long)(rpm_abs % 10),
+               (foc_err < 0) ? "-" : "+",
+               (long)(foc_err_abs / 10),
+               (long)(foc_err_abs % 10));
+    }
+    else if (MotorControl_GetMode() == MOTOR_MODE_FOC_VOLTAGE)
+    {
+      snprintf(line, sizeof(line), "RPM:%s%ld.%ld MAG:%u",
+               (rpm_x10 < 0) ? "-" : "+",
+               (long)(rpm_abs / 10),
+               (long)(rpm_abs % 10),
+               (unsigned int)feedback.magnet_detected);
     }
     else
     {

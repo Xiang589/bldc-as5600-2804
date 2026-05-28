@@ -27,6 +27,17 @@ typedef struct {
   uint32_t error_count;
   uint32_t consecutive_error_count;
   HAL_StatusTypeDef last_hal_status;
+  uint8_t status_valid;
+  uint8_t magnet_detected;
+  uint8_t magnet_too_weak;
+  uint8_t magnet_too_strong;
+  uint8_t status;
+  uint8_t agc;
+  uint16_t magnitude;
+  uint32_t diag_update_tick;
+  uint32_t last_i2c_error;
+  HAL_I2C_StateTypeDef last_i2c_state;
+  HAL_StatusTypeDef last_diag_hal_status;
 } MotorFeedbackSnapshot_t;
 
 void MotorFeedback_GetSnapshot(MotorFeedbackSnapshot_t *snapshot);

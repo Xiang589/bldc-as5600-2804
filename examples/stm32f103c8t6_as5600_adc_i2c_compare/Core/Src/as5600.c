@@ -74,6 +74,16 @@ HAL_StatusTypeDef AS5600_ReadStatus(I2C_HandleTypeDef *hi2c, uint8_t *status)
   return AS5600_ReadU8(hi2c, AS5600_REG_STATUS, status);
 }
 
+HAL_StatusTypeDef AS5600_ReadAgc(I2C_HandleTypeDef *hi2c, uint8_t *agc)
+{
+  return AS5600_ReadU8(hi2c, AS5600_REG_AGC, agc);
+}
+
+HAL_StatusTypeDef AS5600_ReadMagnitude(I2C_HandleTypeDef *hi2c, uint16_t *magnitude)
+{
+  return AS5600_ReadU16(hi2c, AS5600_REG_MAGNITUDE, magnitude);
+}
+
 float AS5600_RawToDegree(uint16_t raw)
 {
   /* 角度换算：12 位计数一圈共 4096 份 -> degree = raw / 4096 * 360。 */

@@ -36,6 +36,33 @@
 #define MOTOR_SPEED_PID_OUTPUT_LIMIT_MS 25
 #define MOTOR_CL_FEEDBACK_TIMEOUT_MS  500U
 #define MOTOR_CL_STARTUP_GRACE_MS    2000U
+#define MOTOR_FOC_POLE_PAIRS          7
+#define MOTOR_FOC_SUPPLY_MV           12000
+#define MOTOR_FOC_VOLTAGE_LIMIT_MV    1000
+#define MOTOR_FOC_ALIGN_VOLTAGE_MV    500
+#define MOTOR_FOC_ALIGN_TIME_MS       250U
+#define MOTOR_FOC_ANGLE_TIMEOUT_MS    120U
+#define MOTOR_FOC_UQ_SLEW_MV          20
+#define MOTOR_FOC_POSITION_STEP_DEG_X10 100
+#define MOTOR_FOC_POSITION_LIMIT_DEG_X10 36000
+#define MOTOR_FOC_POSITION_ERROR_LIMIT_DEG_X10 7200
+#define MOTOR_FOC_TARGET_RPM_LIMIT_X10 1200
+#define MOTOR_FOC_SPEED_PID_KP_NUM    1
+#define MOTOR_FOC_SPEED_PID_KP_DEN    4
+#define MOTOR_FOC_SPEED_PID_KI_NUM    1
+#define MOTOR_FOC_SPEED_PID_KI_DEN    80
+#define MOTOR_FOC_SPEED_PID_KD_NUM    0
+#define MOTOR_FOC_SPEED_PID_KD_DEN    1
+#define MOTOR_FOC_SPEED_PID_INTEGRATOR_LIMIT 6000
+#define MOTOR_FOC_SPEED_PID_OUTPUT_LIMIT_MV MOTOR_FOC_VOLTAGE_LIMIT_MV
+#define MOTOR_FOC_POSITION_PID_KP_NUM 1
+#define MOTOR_FOC_POSITION_PID_KP_DEN 30
+#define MOTOR_FOC_POSITION_PID_KI_NUM 0
+#define MOTOR_FOC_POSITION_PID_KI_DEN 1
+#define MOTOR_FOC_POSITION_PID_KD_NUM 0
+#define MOTOR_FOC_POSITION_PID_KD_DEN 1
+#define MOTOR_FOC_POSITION_PID_INTEGRATOR_LIMIT 0
+#define MOTOR_FOC_SENSOR_DELTA_SIGN   (-1)
 
 static const uint16_t kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MAX] = {
   310U,
@@ -53,6 +80,13 @@ typedef struct {
   int32_t error;
   int32_t output;
 } MotorSpeedPid_t;
+
+typedef struct {
+  int32_t integrator;
+  int32_t prev_error;
+  int32_t error;
+  int32_t output;
+} MotorPidState_t;
 
 static const int16_t kSineLut[MOTOR_LUT_SIZE] = {
        0,    804,   1608,   2410,   3212,   4011,   4808,   5602,
@@ -111,6 +145,23 @@ static uint32_t g_startup_start_tick = 0U;
 static uint8_t g_ever_had_valid_speed_feedback = 0U;
 static uint32_t g_feedback_lost_count = 0U;
 static uint8_t g_control_ready = 0U;
+static int32_t g_target_rpm_x10 = 600;
+static MotorPidState_t g_foc_speed_pid;
+static MotorPidState_t g_foc_position_pid;
+static uint32_t g_last_foc_speed_sample_seq = 0U;
+static uint8_t g_foc_speed_wait_new_sample = 1U;
+static uint32_t g_last_foc_angle_update_count = 0U;
+static uint8_t g_foc_has_position_sample = 0U;
+static uint16_t g_foc_prev_raw_angle = 0U;
+static int32_t g_foc_position_counts = 0;
+static int32_t g_foc_target_position_deg_x10 = 0;
+static int32_t g_foc_position_error_deg_x10 = 0;
+static int32_t g_foc_target_velocity_rpm_x10 = 0;
+static int32_t g_foc_velocity_error_x10 = 0;
+static int32_t g_foc_uq_command_mv = 0;
+static int32_t g_foc_uq_mv = 0;
+static uint8_t g_foc_zero_valid = 0U;
+static uint32_t g_foc_zero_offset_q16 = 0U;
 
 static float MotorControl_ClampDuty(float duty)
 {
@@ -141,6 +192,93 @@ static int32_t MotorSpeedPid_ClampI32(int32_t value, int32_t min_value, int32_t 
   if (value < min_value) return min_value;
   if (value > max_value) return max_value;
   return value;
+}
+
+static int32_t MotorControl_AbsI32(int32_t value)
+{
+  return (value < 0) ? -value : value;
+}
+
+static void MotorPid_Reset(MotorPidState_t *pid)
+{
+  if (pid == 0)
+  {
+    return;
+  }
+
+  pid->integrator = 0;
+  pid->prev_error = 0;
+  pid->error = 0;
+  pid->output = 0;
+}
+
+static int32_t MotorPid_Update(MotorPidState_t *pid,
+                               int32_t error,
+                               int32_t kp_num,
+                               int32_t kp_den,
+                               int32_t ki_num,
+                               int32_t ki_den,
+                               int32_t kd_num,
+                               int32_t kd_den,
+                               int32_t integrator_limit,
+                               int32_t output_limit)
+{
+  int32_t proposed_integrator;
+  int32_t derivative;
+  int32_t output_unclamped;
+  int32_t output_clamped;
+  uint8_t hold_integrator = 0U;
+
+  if ((pid == 0) || (kp_den == 0) || (ki_den == 0) || (kd_den == 0))
+  {
+    return 0;
+  }
+
+  proposed_integrator = pid->integrator + error;
+  if (integrator_limit > 0)
+  {
+    proposed_integrator = MotorSpeedPid_ClampI32(proposed_integrator,
+                                                 -integrator_limit,
+                                                 integrator_limit);
+  }
+  else
+  {
+    proposed_integrator = 0;
+  }
+
+  derivative = error - pid->prev_error;
+  output_unclamped = ((error * kp_num) / kp_den) +
+                     ((proposed_integrator * ki_num) / ki_den) +
+                     ((derivative * kd_num) / kd_den);
+  output_clamped = MotorSpeedPid_ClampI32(output_unclamped,
+                                          -output_limit,
+                                          output_limit);
+
+  if ((output_unclamped > output_limit) && (error > 0))
+  {
+    hold_integrator = 1U;
+  }
+  else if ((output_unclamped < -output_limit) && (error < 0))
+  {
+    hold_integrator = 1U;
+  }
+
+  if (hold_integrator != 0U)
+  {
+    proposed_integrator = pid->integrator;
+    output_unclamped = ((error * kp_num) / kp_den) +
+                       ((proposed_integrator * ki_num) / ki_den) +
+                       ((derivative * kd_num) / kd_den);
+    output_clamped = MotorSpeedPid_ClampI32(output_unclamped,
+                                            -output_limit,
+                                            output_limit);
+  }
+
+  pid->integrator = proposed_integrator;
+  pid->prev_error = error;
+  pid->error = error;
+  pid->output = output_clamped;
+  return output_clamped;
 }
 
 static int32_t MotorSpeedPid_Update(int32_t error, uint16_t base_period_ms)
@@ -220,10 +358,8 @@ static uint16_t MotorControl_ClampPermyriad(int32_t duty)
   return (uint16_t)duty;
 }
 
-static void MotorControl_ApplyOpenLoopPwm(void)
+static void MotorControl_ApplyThreePhasePwm(uint8_t index, uint16_t amplitude_permyriad)
 {
-  const uint8_t index = (uint8_t)((g_phase_q16 >> MOTOR_PHASE_FRAC_BITS) & 0xFFU);
-  const uint16_t amplitude_permyriad = MotorControl_DutyToAmplitudePermyriad(g_duty_permyriad);
   const int16_t sa = kSineLut[index];
   const int16_t sb = kSineLut[(uint8_t)(index + MOTOR_LUT_PHASE_B_OFFSET)];
   const int16_t sc = kSineLut[(uint8_t)(index + MOTOR_LUT_PHASE_C_OFFSET)];
@@ -237,11 +373,22 @@ static void MotorControl_ApplyOpenLoopPwm(void)
                                   MotorControl_ClampPermyriad(dw));
 }
 
+static void MotorControl_ApplyOpenLoopPwm(void)
+{
+  const uint8_t index = (uint8_t)((g_phase_q16 >> MOTOR_PHASE_FRAC_BITS) & 0xFFU);
+  const uint16_t amplitude_permyriad = MotorControl_DutyToAmplitudePermyriad(g_duty_permyriad);
+  MotorControl_ApplyThreePhasePwm(index, amplitude_permyriad);
+}
+
 static uint8_t MotorControl_IsRunningState(MotorControlState_t state)
 {
   return ((state == MOTOR_STATE_STARTUP) ||
           (state == MOTOR_STATE_RUNNING_OPEN_LOOP) ||
-          (state == MOTOR_STATE_RUNNING_CLOSED_LOOP));
+          (state == MOTOR_STATE_RUNNING_CLOSED_LOOP) ||
+          (state == MOTOR_STATE_RUNNING_FOC_VOLTAGE) ||
+          (state == MOTOR_STATE_RUNNING_FOC_VELOCITY) ||
+          (state == MOTOR_STATE_RUNNING_FOC_POSITION) ||
+          (state == MOTOR_STATE_CALIBRATION));
 }
 
 static void MotorControl_ResetClosedLoopTracking(uint32_t startup_tick)
@@ -253,6 +400,23 @@ static void MotorControl_ResetClosedLoopTracking(uint32_t startup_tick)
   MotorSpeedPid_Reset();
 }
 
+static void MotorControl_ResetFocTracking(void)
+{
+  MotorPid_Reset(&g_foc_speed_pid);
+  MotorPid_Reset(&g_foc_position_pid);
+  g_last_foc_speed_sample_seq = 0U;
+  g_foc_speed_wait_new_sample = 1U;
+  g_last_foc_angle_update_count = 0U;
+  g_foc_has_position_sample = 0U;
+  g_foc_prev_raw_angle = 0U;
+  g_foc_position_counts = 0;
+  g_foc_position_error_deg_x10 = 0;
+  g_foc_target_velocity_rpm_x10 = 0;
+  g_foc_velocity_error_x10 = 0;
+  g_foc_uq_command_mv = 0;
+  g_foc_uq_mv = 0;
+}
+
 static void MotorControl_ResetRunState(uint32_t now)
 {
   g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
@@ -260,6 +424,7 @@ static void MotorControl_ResetRunState(uint32_t now)
   g_last_update_tick = now;
   g_last_ramp_tick = now;
   MotorControl_ResetClosedLoopTracking(0U);
+  MotorControl_ResetFocTracking();
 }
 
 static void MotorControl_StopToState(MotorStopReason_t reason,
@@ -283,6 +448,7 @@ static void MotorControl_StopWithReason(MotorStopReason_t reason)
     MotorDriver_SetAllPwmZero();
     MotorDriver_Disable();
     MotorControl_ResetClosedLoopTracking(0U);
+    MotorControl_ResetFocTracking();
     return;
   }
 
@@ -292,6 +458,207 @@ static void MotorControl_StopWithReason(MotorStopReason_t reason)
 static void MotorControl_StopWithFault(MotorStopReason_t reason, MotorFault_t fault)
 {
   MotorControl_StopToState(reason, fault, MOTOR_STATE_FAULT);
+}
+
+static uint8_t MotorControl_IsFocMode(MotorControlMode_t mode)
+{
+  return ((mode == MOTOR_MODE_FOC_VOLTAGE) ||
+          (mode == MOTOR_MODE_FOC_VELOCITY) ||
+          (mode == MOTOR_MODE_FOC_POSITION)) ? 1U : 0U;
+}
+
+static uint8_t MotorControl_ModeUsesSpeedFeedback(MotorControlMode_t mode)
+{
+  return ((mode == MOTOR_MODE_SPEED_CLOSED_LOOP) ||
+          (mode == MOTOR_MODE_FOC_VELOCITY) ||
+          (mode == MOTOR_MODE_FOC_POSITION)) ? 1U : 0U;
+}
+
+static uint8_t MotorControl_IsFeedbackAngleFresh(const MotorFeedbackSnapshot_t *feedback, uint32_t now)
+{
+  if (feedback == 0)
+  {
+    return 0U;
+  }
+
+  return ((feedback->angle_valid != 0U) &&
+          ((now - feedback->last_ok_tick) <= MOTOR_FOC_ANGLE_TIMEOUT_MS)) ? 1U : 0U;
+}
+
+static uint8_t MotorControl_IsFeedbackDiagOk(const MotorFeedbackSnapshot_t *feedback)
+{
+  if (feedback == 0)
+  {
+    return 0U;
+  }
+
+  return ((feedback->status_valid != 0U) &&
+          (feedback->magnet_detected != 0U) &&
+          (feedback->magnet_too_weak == 0U) &&
+          (feedback->magnet_too_strong == 0U)) ? 1U : 0U;
+}
+
+static uint8_t MotorControl_IsFeedbackReadyForFoc(const MotorFeedbackSnapshot_t *feedback, uint32_t now)
+{
+  return ((MotorControl_IsFeedbackAngleFresh(feedback, now) != 0U) &&
+          (MotorControl_IsFeedbackDiagOk(feedback) != 0U)) ? 1U : 0U;
+}
+
+static uint32_t MotorControl_NormalizePhaseQ16(int64_t value)
+{
+  int64_t mod = value % (int64_t)MOTOR_PHASE_FULL;
+  if (mod < 0)
+  {
+    mod += MOTOR_PHASE_FULL;
+  }
+  return (uint32_t)mod;
+}
+
+static uint32_t MotorControl_RawAngleToMechanicalPhaseQ16(uint16_t raw_angle)
+{
+  uint32_t phase = ((uint32_t)(raw_angle & 0x0FFFU) * (MOTOR_PHASE_FULL / 4096U));
+  if (MOTOR_FOC_SENSOR_DELTA_SIGN < 0)
+  {
+    phase = (phase == 0U) ? 0U : (MOTOR_PHASE_FULL - phase);
+  }
+  return phase % MOTOR_PHASE_FULL;
+}
+
+static uint32_t MotorControl_RawAngleToElectricalPhaseQ16(uint16_t raw_angle)
+{
+  uint32_t mech_phase = MotorControl_RawAngleToMechanicalPhaseQ16(raw_angle);
+  return MotorControl_NormalizePhaseQ16(((int64_t)mech_phase * MOTOR_FOC_POLE_PAIRS) +
+                                        (int64_t)g_foc_zero_offset_q16);
+}
+
+static void MotorControl_CaptureFocZeroFromRaw(uint16_t raw_angle)
+{
+  uint32_t mech_phase = MotorControl_RawAngleToMechanicalPhaseQ16(raw_angle);
+  g_foc_zero_offset_q16 = MotorControl_NormalizePhaseQ16(-((int64_t)mech_phase * MOTOR_FOC_POLE_PAIRS));
+  g_foc_zero_valid = 1U;
+  g_foc_position_counts = 0;
+  g_foc_target_position_deg_x10 = 0;
+  g_foc_has_position_sample = 0U;
+  g_last_foc_angle_update_count = 0U;
+}
+
+static int32_t MotorControl_GetDirectionSign(void)
+{
+  return (g_direction == MOTOR_DIR_FWD) ? 1 : -1;
+}
+
+static int32_t MotorControl_GetSignedTargetRpmX10(void)
+{
+  return g_target_rpm_x10 * MotorControl_GetDirectionSign();
+}
+
+static int32_t MotorControl_GetSignedFocVoltageTargetMv(void)
+{
+  int32_t target_mv = ((int32_t)MotorControl_DutyToAmplitudePermyriad(g_duty_permyriad) *
+                       MOTOR_FOC_SUPPLY_MV) / (int32_t)MOTOR_FULL_DUTY_PERMYRIAD;
+  target_mv = MotorSpeedPid_ClampI32(target_mv, 0, MOTOR_FOC_VOLTAGE_LIMIT_MV);
+  return target_mv * MotorControl_GetDirectionSign();
+}
+
+static void MotorControl_UpdateFocPositionFromFeedback(const MotorFeedbackSnapshot_t *feedback)
+{
+  if ((feedback == 0) || (feedback->angle_valid == 0U))
+  {
+    return;
+  }
+
+  if (feedback->update_count == g_last_foc_angle_update_count)
+  {
+    return;
+  }
+
+  if (g_foc_has_position_sample == 0U)
+  {
+    g_foc_prev_raw_angle = feedback->raw_angle;
+    g_foc_has_position_sample = 1U;
+  }
+  else
+  {
+    int32_t delta_raw = (int32_t)feedback->raw_angle - (int32_t)g_foc_prev_raw_angle;
+    if (delta_raw > 2048)
+    {
+      delta_raw -= 4096;
+    }
+    else if (delta_raw < -2048)
+    {
+      delta_raw += 4096;
+    }
+    g_foc_position_counts += delta_raw * MOTOR_FOC_SENSOR_DELTA_SIGN;
+    g_foc_prev_raw_angle = feedback->raw_angle;
+  }
+
+  g_last_foc_angle_update_count = feedback->update_count;
+}
+
+static int32_t MotorControl_SlewToward(int32_t current, int32_t target, int32_t step)
+{
+  if (current < target)
+  {
+    current += step;
+    if (current > target) current = target;
+  }
+  else if (current > target)
+  {
+    current -= step;
+    if (current < target) current = target;
+  }
+  return current;
+}
+
+static void MotorControl_ApplyFocVoltage(int32_t uq_mv, uint16_t raw_angle)
+{
+  uint32_t elec_phase = MotorControl_RawAngleToElectricalPhaseQ16(raw_angle);
+  uint16_t amplitude_permyriad;
+
+  uq_mv = MotorSpeedPid_ClampI32(uq_mv,
+                                 -MOTOR_FOC_VOLTAGE_LIMIT_MV,
+                                 MOTOR_FOC_VOLTAGE_LIMIT_MV);
+  if (uq_mv < 0)
+  {
+    uq_mv = -uq_mv;
+    elec_phase += (MOTOR_PHASE_FULL / 2U);
+    if (elec_phase >= MOTOR_PHASE_FULL) elec_phase -= MOTOR_PHASE_FULL;
+  }
+
+  amplitude_permyriad = (uint16_t)(((uint32_t)uq_mv * MOTOR_FULL_DUTY_PERMYRIAD) /
+                                   MOTOR_FOC_SUPPLY_MV);
+  MotorControl_ApplyThreePhasePwm((uint8_t)((elec_phase >> MOTOR_PHASE_FRAC_BITS) & 0xFFU),
+                                  amplitude_permyriad);
+}
+
+static void MotorControl_UpdateFocSpeedPid(int32_t target_rpm_x10,
+                                           int32_t actual_rpm_x10,
+                                           uint32_t speed_sample_seq)
+{
+  if (g_foc_speed_wait_new_sample != 0U)
+  {
+    g_last_foc_speed_sample_seq = speed_sample_seq;
+    g_foc_speed_wait_new_sample = 0U;
+    return;
+  }
+
+  if (speed_sample_seq == g_last_foc_speed_sample_seq)
+  {
+    return;
+  }
+
+  g_foc_velocity_error_x10 = target_rpm_x10 - actual_rpm_x10;
+  g_foc_uq_command_mv = MotorPid_Update(&g_foc_speed_pid,
+                                        g_foc_velocity_error_x10,
+                                        MOTOR_FOC_SPEED_PID_KP_NUM,
+                                        MOTOR_FOC_SPEED_PID_KP_DEN,
+                                        MOTOR_FOC_SPEED_PID_KI_NUM,
+                                        MOTOR_FOC_SPEED_PID_KI_DEN,
+                                        MOTOR_FOC_SPEED_PID_KD_NUM,
+                                        MOTOR_FOC_SPEED_PID_KD_DEN,
+                                        MOTOR_FOC_SPEED_PID_INTEGRATOR_LIMIT,
+                                        MOTOR_FOC_SPEED_PID_OUTPUT_LIMIT_MV);
+  g_last_foc_speed_sample_seq = speed_sample_seq;
 }
 
 void MotorControl_Init(void)
@@ -310,7 +677,12 @@ void MotorControl_Init(void)
   g_last_ramp_tick = g_last_update_tick;
   g_mode = MOTOR_MODE_OPEN_LOOP;
   g_cl_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
+  g_target_rpm_x10 = kTargetRpmX10[g_target_speed_level - 1U];
+  g_foc_zero_valid = 0U;
+  g_foc_zero_offset_q16 = 0U;
+  g_foc_target_position_deg_x10 = 0;
   MotorControl_ResetClosedLoopTracking(0U);
+  MotorControl_ResetFocTracking();
 
   MotorDriver_SetAllPwmZero();
   MotorDriver_Disable();
@@ -320,17 +692,33 @@ void MotorControl_Init(void)
 void MotorControl_Start(void)
 {
   MotorFeedbackSnapshot_t feedback;
+  uint32_t now;
 
   if (MotorControl_IsRunning() != 0U) return;
   if (g_fault != MOTOR_FAULT_NONE) return;
   if (g_state != MOTOR_STATE_STOPPED) return;
 
   MotorFeedback_GetSnapshot(&feedback);
+  now = HAL_GetTick();
 
-  if ((g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP) && (feedback.angle_valid == 0U))
+  if (((g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP) && (feedback.angle_valid == 0U)) ||
+      ((MotorControl_IsFocMode(g_mode) != 0U) &&
+       (MotorControl_IsFeedbackAngleFresh(&feedback, now) == 0U)))
   {
     g_stop_reason = MOTOR_STOP_REASON_START_DENIED_NO_ANGLE;
     return;
+  }
+
+  if ((MotorControl_IsFocMode(g_mode) != 0U) &&
+      (MotorControl_IsFeedbackDiagOk(&feedback) == 0U))
+  {
+    g_stop_reason = MOTOR_STOP_REASON_START_DENIED_SENSOR_DIAG;
+    return;
+  }
+
+  if ((MotorControl_IsFocMode(g_mode) != 0U) && (g_foc_zero_valid == 0U))
+  {
+    MotorControl_CaptureFocZeroFromRaw(feedback.raw_angle);
   }
 
   g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
@@ -338,17 +726,145 @@ void MotorControl_Start(void)
   g_phase_q16 = 0U;
   MotorDriver_SetAllPwmZero();
   MotorDriver_Enable();
-  g_state = (g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
-              ? MOTOR_STATE_STARTUP
-              : MOTOR_STATE_RUNNING_OPEN_LOOP;
+  if (g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
+  {
+    g_state = MOTOR_STATE_STARTUP;
+  }
+  else if (g_mode == MOTOR_MODE_FOC_VOLTAGE)
+  {
+    g_state = MOTOR_STATE_RUNNING_FOC_VOLTAGE;
+  }
+  else if ((g_mode == MOTOR_MODE_FOC_VELOCITY) || (g_mode == MOTOR_MODE_FOC_POSITION))
+  {
+    g_state = MOTOR_STATE_STARTUP;
+  }
+  else
+  {
+    g_state = MOTOR_STATE_RUNNING_OPEN_LOOP;
+  }
   g_stop_reason = MOTOR_STOP_REASON_NONE;
   g_fault = MOTOR_FAULT_NONE;
-  g_last_update_tick = HAL_GetTick();
+  g_last_update_tick = now;
   g_last_ramp_tick = g_last_update_tick;
-  MotorControl_ResetClosedLoopTracking((g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
+  MotorControl_ResetClosedLoopTracking((MotorControl_ModeUsesSpeedFeedback(g_mode) != 0U)
                                          ? g_last_update_tick
                                          : 0U);
-  MotorControl_ApplyOpenLoopPwm();
+  MotorControl_ResetFocTracking();
+  if (MotorControl_IsFocMode(g_mode) != 0U)
+  {
+    MotorControl_UpdateFocPositionFromFeedback(&feedback);
+    MotorControl_ApplyFocVoltage(0, feedback.raw_angle);
+  }
+  else
+  {
+    MotorControl_ApplyOpenLoopPwm();
+  }
+}
+
+static void MotorControl_UpdateFoc(uint32_t now,
+                                   const MotorFeedbackSnapshot_t *feedback)
+{
+  uint8_t speed_fresh = 0U;
+
+  if (MotorControl_IsFeedbackAngleFresh(feedback, now) == 0U)
+  {
+    MotorControl_StopWithFault(MOTOR_STOP_REASON_FEEDBACK_LOST,
+                               MOTOR_FAULT_ANGLE_STALE);
+    return;
+  }
+
+  if (MotorControl_IsFeedbackDiagOk(feedback) == 0U)
+  {
+    MotorControl_StopWithFault(MOTOR_STOP_REASON_FEEDBACK_LOST,
+                               MOTOR_FAULT_SENSOR_DIAG);
+    return;
+  }
+
+  MotorControl_UpdateFocPositionFromFeedback(feedback);
+
+  if (g_mode == MOTOR_MODE_FOC_VOLTAGE)
+  {
+    g_foc_uq_command_mv = MotorControl_GetSignedFocVoltageTargetMv();
+  }
+  else
+  {
+    speed_fresh = ((feedback->speed_valid != 0U) &&
+                   ((now - feedback->speed_update_tick) <= MOTOR_CL_FEEDBACK_TIMEOUT_MS))
+                    ? 1U
+                    : 0U;
+
+    if (speed_fresh == 0U)
+    {
+      g_feedback_lost_count++;
+
+      if ((g_ever_had_valid_speed_feedback == 0U) &&
+          ((now - g_startup_start_tick) >= MOTOR_CL_STARTUP_GRACE_MS))
+      {
+        MotorControl_StopWithFault(MOTOR_STOP_REASON_FEEDBACK_LOST,
+                                   MOTOR_FAULT_STARTUP_FEEDBACK_TIMEOUT);
+        return;
+      }
+
+      if (g_ever_had_valid_speed_feedback != 0U)
+      {
+        if (g_feedback_lost_tick == 0U) g_feedback_lost_tick = now;
+        else if ((now - g_feedback_lost_tick) >= MOTOR_CL_FEEDBACK_TIMEOUT_MS)
+        {
+          MotorControl_StopWithFault(MOTOR_STOP_REASON_FEEDBACK_LOST,
+                                     MOTOR_FAULT_FEEDBACK_LOST);
+          return;
+        }
+      }
+    }
+    else
+    {
+      if (g_state == MOTOR_STATE_STARTUP)
+      {
+        g_state = (g_mode == MOTOR_MODE_FOC_POSITION)
+                    ? MOTOR_STATE_RUNNING_FOC_POSITION
+                    : MOTOR_STATE_RUNNING_FOC_VELOCITY;
+      }
+      g_ever_had_valid_speed_feedback = 1U;
+      g_feedback_lost_tick = 0U;
+      g_feedback_lost_count = 0U;
+
+      if (g_mode == MOTOR_MODE_FOC_POSITION)
+      {
+        int64_t position_deg_x10 = ((int64_t)g_foc_position_counts * 3600LL) / 4096LL;
+        int32_t position_error = g_foc_target_position_deg_x10 - (int32_t)position_deg_x10;
+        position_error = MotorSpeedPid_ClampI32(position_error,
+                                                -MOTOR_FOC_POSITION_ERROR_LIMIT_DEG_X10,
+                                                MOTOR_FOC_POSITION_ERROR_LIMIT_DEG_X10);
+        g_foc_position_error_deg_x10 = position_error;
+        g_foc_target_velocity_rpm_x10 = MotorPid_Update(&g_foc_position_pid,
+                                                        position_error,
+                                                        MOTOR_FOC_POSITION_PID_KP_NUM,
+                                                        MOTOR_FOC_POSITION_PID_KP_DEN,
+                                                        MOTOR_FOC_POSITION_PID_KI_NUM,
+                                                        MOTOR_FOC_POSITION_PID_KI_DEN,
+                                                        MOTOR_FOC_POSITION_PID_KD_NUM,
+                                                        MOTOR_FOC_POSITION_PID_KD_DEN,
+                                                        MOTOR_FOC_POSITION_PID_INTEGRATOR_LIMIT,
+                                                        MOTOR_FOC_TARGET_RPM_LIMIT_X10);
+      }
+      else
+      {
+        g_foc_target_velocity_rpm_x10 = MotorControl_GetSignedTargetRpmX10();
+      }
+
+      MotorControl_UpdateFocSpeedPid(g_foc_target_velocity_rpm_x10,
+                                     feedback->rpm_x10,
+                                     feedback->speed_sample_seq);
+    }
+  }
+
+  g_foc_uq_command_mv = MotorSpeedPid_ClampI32(g_foc_uq_command_mv,
+                                               -MOTOR_FOC_VOLTAGE_LIMIT_MV,
+                                               MOTOR_FOC_VOLTAGE_LIMIT_MV);
+  g_foc_uq_mv = MotorControl_SlewToward(g_foc_uq_mv,
+                                        g_foc_uq_command_mv,
+                                        MOTOR_FOC_UQ_SLEW_MV);
+  MotorControl_ApplyFocVoltage(g_foc_uq_mv, feedback->raw_angle);
 }
 
 void MotorControl_Stop(void)
@@ -362,10 +878,19 @@ void MotorControl_Update(uint32_t now)
   MotorFeedbackSnapshot_t feedback;
 
   if (MotorControl_IsRunning() == 0U) return;
+  if (g_state == MOTOR_STATE_CALIBRATION) return;
 
   dt_ms = now - g_last_update_tick;
   if (dt_ms == 0U) return;
   if (dt_ms > MOTOR_UPDATE_DT_MAX_MS) dt_ms = MOTOR_UPDATE_DT_MAX_MS;
+
+  if (MotorControl_IsFocMode(g_mode) != 0U)
+  {
+    MotorFeedback_GetSnapshot(&feedback);
+    MotorControl_UpdateFoc(now, &feedback);
+    g_last_update_tick = now;
+    return;
+  }
 
   if (g_mode == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
@@ -496,6 +1021,7 @@ void MotorControl_ClearFault(void)
   MotorDriver_SetAllPwmZero();
   MotorDriver_Disable();
   MotorControl_ResetClosedLoopTracking(0U);
+  MotorControl_ResetFocTracking();
   g_fault = MOTOR_FAULT_NONE;
   if (g_state == MOTOR_STATE_FAULT)
   {
@@ -513,6 +1039,7 @@ void MotorControl_SetDirection(MotorDirection_t dir)
   else if (dir != g_direction)
   {
     MotorControl_ResetClosedLoopTracking(0U);
+    MotorControl_ResetFocTracking();
   }
   g_direction = dir;
 }
@@ -528,6 +1055,7 @@ void MotorControl_ToggleDirection(void)
   else
   {
     MotorControl_ResetClosedLoopTracking(0U);
+    MotorControl_ResetFocTracking();
   }
   g_direction = (g_direction == MOTOR_DIR_FWD) ? MOTOR_DIR_REV : MOTOR_DIR_FWD;
 }
@@ -538,13 +1066,38 @@ void MotorControl_SetSpeedLevel(uint8_t level)
   if (next_level != g_target_speed_level)
   {
     MotorSpeedPid_Reset();
+    MotorControl_ResetFocTracking();
   }
   g_target_speed_level = next_level;
   g_target_period_ms = kSpeedPeriodMs[g_target_speed_level - 1U];
+  g_target_rpm_x10 = kTargetRpmX10[g_target_speed_level - 1U];
 }
 uint8_t MotorControl_GetSpeedLevel(void) { return g_target_speed_level; }
-void MotorControl_SpeedUp(void) { MotorControl_SetSpeedLevel((uint8_t)(g_target_speed_level + 1U)); }
-void MotorControl_SpeedDown(void) { MotorControl_SetSpeedLevel((uint8_t)(g_target_speed_level - 1U)); }
+void MotorControl_SpeedUp(void)
+{
+  if (g_mode == MOTOR_MODE_FOC_POSITION)
+  {
+    MotorControl_SetTargetPositionDegX10(g_foc_target_position_deg_x10 +
+                                         MOTOR_FOC_POSITION_STEP_DEG_X10);
+  }
+  else
+  {
+    MotorControl_SetSpeedLevel((uint8_t)(g_target_speed_level + 1U));
+  }
+}
+
+void MotorControl_SpeedDown(void)
+{
+  if (g_mode == MOTOR_MODE_FOC_POSITION)
+  {
+    MotorControl_SetTargetPositionDegX10(g_foc_target_position_deg_x10 -
+                                         MOTOR_FOC_POSITION_STEP_DEG_X10);
+  }
+  else
+  {
+    MotorControl_SetSpeedLevel((uint8_t)(g_target_speed_level - 1U));
+  }
+}
 uint16_t MotorControl_GetStepPeriodMs(void) { return kSpeedPeriodMs[g_target_speed_level - 1U]; }
 
 void MotorControl_SetDuty(float duty)
@@ -573,7 +1126,10 @@ uint8_t MotorControl_GetPhaseIndex(void)
 
 void MotorControl_SetMode(MotorControlMode_t mode)
 {
-  if (mode != MOTOR_MODE_SPEED_CLOSED_LOOP)
+  if ((mode != MOTOR_MODE_SPEED_CLOSED_LOOP) &&
+      (mode != MOTOR_MODE_FOC_VOLTAGE) &&
+      (mode != MOTOR_MODE_FOC_VELOCITY) &&
+      (mode != MOTOR_MODE_FOC_POSITION))
   {
     mode = MOTOR_MODE_OPEN_LOOP;
   }
@@ -585,6 +1141,7 @@ void MotorControl_SetMode(MotorControlMode_t mode)
   else if (mode != g_mode)
   {
     MotorControl_ResetClosedLoopTracking(0U);
+    MotorControl_ResetFocTracking();
   }
 
   g_mode = mode;
@@ -592,13 +1149,24 @@ void MotorControl_SetMode(MotorControlMode_t mode)
 
 void MotorControl_ToggleMode(void)
 {
-  if (g_mode == MOTOR_MODE_OPEN_LOOP)
+  switch (g_mode)
   {
-    MotorControl_SetMode(MOTOR_MODE_SPEED_CLOSED_LOOP);
-  }
-  else
-  {
-    MotorControl_SetMode(MOTOR_MODE_OPEN_LOOP);
+    case MOTOR_MODE_OPEN_LOOP:
+      MotorControl_SetMode(MOTOR_MODE_SPEED_CLOSED_LOOP);
+      break;
+    case MOTOR_MODE_SPEED_CLOSED_LOOP:
+      MotorControl_SetMode(MOTOR_MODE_FOC_VOLTAGE);
+      break;
+    case MOTOR_MODE_FOC_VOLTAGE:
+      MotorControl_SetMode(MOTOR_MODE_FOC_VELOCITY);
+      break;
+    case MOTOR_MODE_FOC_VELOCITY:
+      MotorControl_SetMode(MOTOR_MODE_FOC_POSITION);
+      break;
+    case MOTOR_MODE_FOC_POSITION:
+    default:
+      MotorControl_SetMode(MOTOR_MODE_OPEN_LOOP);
+      break;
   }
 }
 
@@ -607,4 +1175,81 @@ MotorControlMode_t MotorControl_GetMode(void)
   return g_mode;
 }
 
-int32_t MotorControl_GetTargetRpmX10(void) { return kTargetRpmX10[g_target_speed_level - 1U]; }
+void MotorControl_SetTargetRpmX10(int32_t rpm_x10)
+{
+  int32_t target = MotorControl_AbsI32(rpm_x10);
+  target = MotorSpeedPid_ClampI32(target, 0, MOTOR_FOC_TARGET_RPM_LIMIT_X10);
+  if (target != g_target_rpm_x10)
+  {
+    MotorSpeedPid_Reset();
+    MotorPid_Reset(&g_foc_speed_pid);
+    g_last_foc_speed_sample_seq = 0U;
+    g_foc_speed_wait_new_sample = 1U;
+  }
+  g_target_rpm_x10 = target;
+}
+
+int32_t MotorControl_GetTargetRpmX10(void) { return g_target_rpm_x10; }
+
+void MotorControl_SetTargetPositionDegX10(int32_t deg_x10)
+{
+  g_foc_target_position_deg_x10 = MotorSpeedPid_ClampI32(deg_x10,
+                                                         -MOTOR_FOC_POSITION_LIMIT_DEG_X10,
+                                                         MOTOR_FOC_POSITION_LIMIT_DEG_X10);
+  MotorPid_Reset(&g_foc_position_pid);
+}
+
+int32_t MotorControl_GetTargetPositionDegX10(void)
+{
+  return g_foc_target_position_deg_x10;
+}
+
+int32_t MotorControl_GetPositionDegX10(void)
+{
+  return (int32_t)(((int64_t)g_foc_position_counts * 3600LL) / 4096LL);
+}
+
+int32_t MotorControl_GetFocUqMv(void) { return g_foc_uq_mv; }
+int32_t MotorControl_GetFocTargetVelocityRpmX10(void) { return g_foc_target_velocity_rpm_x10; }
+int32_t MotorControl_GetFocVelocityErrorX10(void) { return g_foc_velocity_error_x10; }
+int32_t MotorControl_GetFocPositionErrorDegX10(void) { return g_foc_position_error_deg_x10; }
+int32_t MotorControl_GetFocVoltageTargetMv(void) { return MotorControl_GetSignedFocVoltageTargetMv(); }
+uint8_t MotorControl_IsFocZeroCalibrated(void) { return g_foc_zero_valid; }
+
+void MotorControl_CalibrateFocZero(void)
+{
+  MotorFeedbackSnapshot_t feedback;
+  uint16_t align_amplitude;
+
+  if ((g_state != MOTOR_STATE_STOPPED) || (g_fault != MOTOR_FAULT_NONE))
+  {
+    return;
+  }
+
+  MotorFeedback_GetSnapshot(&feedback);
+  if (MotorControl_IsFeedbackReadyForFoc(&feedback, HAL_GetTick()) == 0U)
+  {
+    return;
+  }
+
+  align_amplitude = (uint16_t)(((uint32_t)MOTOR_FOC_ALIGN_VOLTAGE_MV *
+                                MOTOR_FULL_DUTY_PERMYRIAD) /
+                               MOTOR_FOC_SUPPLY_MV);
+  MotorDriver_SetAllPwmZero();
+  MotorDriver_Enable();
+  g_state = MOTOR_STATE_CALIBRATION;
+  MotorControl_ApplyThreePhasePwm(0U, align_amplitude);
+  HAL_Delay(MOTOR_FOC_ALIGN_TIME_MS);
+  MotorFeedback_GetSnapshot(&feedback);
+  MotorDriver_SetAllPwmZero();
+  MotorDriver_Disable();
+  g_state = MOTOR_STATE_STOPPED;
+
+  if (MotorControl_IsFeedbackReadyForFoc(&feedback, HAL_GetTick()) == 0U)
+  {
+    return;
+  }
+
+  MotorControl_CaptureFocZeroFromRaw(feedback.raw_angle);
+  MotorControl_ResetFocTracking();
+}
