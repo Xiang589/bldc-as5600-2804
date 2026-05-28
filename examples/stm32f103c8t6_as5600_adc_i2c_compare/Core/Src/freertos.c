@@ -26,6 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "motor_control.h"
+#include "motor_feedback.h"
 #include "motor_ui.h"
 
 /* USER CODE END Includes */
@@ -38,6 +39,13 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define ENABLE_RTOS_STACK_MONITOR 0U
+/*
+ * Stage-2 RTOS ownership:
+ * - FeedbackTask owns I2C1/AS5600 sampling.
+ * - UITask owns LCD/touch UI work and reads feedback snapshots.
+ * - ControlTask consumes snapshots through motor_control and never touches I2C/SPI.
+ * Mutexes are deferred until a peripheral is shared by more than one task.
+ */
 
 /* USER CODE END PD */
 
@@ -64,12 +72,19 @@ const osThreadAttr_t UITask_attributes = {
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* Definitions for HeartbeatTask */
-osThreadId_t HeartbeatTaskHandle;
-const osThreadAttr_t HeartbeatTask_attributes = {
-  .name = "HeartbeatTask",
+/* Definitions for MonitorTask */
+osThreadId_t MonitorTaskHandle;
+const osThreadAttr_t MonitorTask_attributes = {
+  .name = "MonitorTask",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for FeedbackTask */
+osThreadId_t FeedbackTaskHandle;
+const osThreadAttr_t FeedbackTask_attributes = {
+  .name = "FeedbackTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -82,7 +97,8 @@ static void RtosStackMonitor_Sample(void);
 
 void StartControlTask(void *argument);
 void StartUiTask(void *argument);
-void StartHeartbeatTask(void *argument);
+void StartMonitorTask(void *argument);
+void StartFeedbackTask(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -119,11 +135,20 @@ void MX_FREERTOS_Init(void) {
   /* creation of UITask */
   UITaskHandle = osThreadNew(StartUiTask, NULL, &UITask_attributes);
 
-  /* creation of HeartbeatTask */
-  HeartbeatTaskHandle = osThreadNew(StartHeartbeatTask, NULL, &HeartbeatTask_attributes);
+  /* creation of MonitorTask */
+  MonitorTaskHandle = osThreadNew(StartMonitorTask, NULL, &MonitorTask_attributes);
+
+  /* creation of FeedbackTask */
+  FeedbackTaskHandle = osThreadNew(StartFeedbackTask, NULL, &FeedbackTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  if ((ControlTaskHandle == NULL) ||
+      (FeedbackTaskHandle == NULL) ||
+      (UITaskHandle == NULL) ||
+      (MonitorTaskHandle == NULL))
+  {
+    Error_Handler();
+  }
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -176,16 +201,16 @@ void StartUiTask(void *argument)
   /* USER CODE END StartUiTask */
 }
 
-/* USER CODE BEGIN Header_StartHeartbeatTask */
+/* USER CODE BEGIN Header_StartMonitorTask */
 /**
-* @brief Function implementing the HeartbeatTask thread.
+* @brief Function implementing the MonitorTask thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_StartHeartbeatTask */
-void StartHeartbeatTask(void *argument)
+/* USER CODE END Header_StartMonitorTask */
+void StartMonitorTask(void *argument)
 {
-  /* USER CODE BEGIN StartHeartbeatTask */
+  /* USER CODE BEGIN StartMonitorTask */
   (void)argument;
 
   /* Infinite loop */
@@ -197,7 +222,30 @@ void StartHeartbeatTask(void *argument)
 #endif
     osDelay(500);
   }
-  /* USER CODE END StartHeartbeatTask */
+  /* USER CODE END StartMonitorTask */
+}
+
+/* USER CODE BEGIN Header_StartFeedbackTask */
+/**
+* @brief Function implementing the FeedbackTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartFeedbackTask */
+void StartFeedbackTask(void *argument)
+{
+  /* USER CODE BEGIN StartFeedbackTask */
+  (void)argument;
+  uint32_t wake_tick = osKernelGetTickCount();
+
+  /* Infinite loop */
+  for(;;)
+  {
+    wake_tick += 20U;
+    MotorFeedback_Update(HAL_GetTick());
+    (void)osDelayUntil(wake_tick);
+  }
+  /* USER CODE END StartFeedbackTask */
 }
 
 /* Private application code --------------------------------------------------*/
@@ -206,12 +254,14 @@ void StartHeartbeatTask(void *argument)
 static void RtosStackMonitor_Sample(void)
 {
   volatile UBaseType_t control_stack_words = uxTaskGetStackHighWaterMark(ControlTaskHandle);
+  volatile UBaseType_t feedback_stack_words = uxTaskGetStackHighWaterMark(FeedbackTaskHandle);
   volatile UBaseType_t ui_stack_words = uxTaskGetStackHighWaterMark(UITaskHandle);
-  volatile UBaseType_t heartbeat_stack_words = uxTaskGetStackHighWaterMark(HeartbeatTaskHandle);
+  volatile UBaseType_t monitor_stack_words = uxTaskGetStackHighWaterMark(MonitorTaskHandle);
 
   (void)control_stack_words;
+  (void)feedback_stack_words;
   (void)ui_stack_words;
-  (void)heartbeat_stack_words;
+  (void)monitor_stack_words;
 }
 #endif
 
