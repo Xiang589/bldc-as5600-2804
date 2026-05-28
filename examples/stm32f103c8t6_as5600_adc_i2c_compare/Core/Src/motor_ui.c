@@ -858,8 +858,6 @@ void MotorUi_Init(void)
 
 void MotorUi_Update(uint32_t now)
 {
-  MotorFeedback_Update(now);
-
   if (g_ui_mode == UI_MODE_CAL_DONE)
   {
     if ((now - g_mode_tick) >= 1200U)
