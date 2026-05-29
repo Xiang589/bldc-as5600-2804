@@ -2,14 +2,11 @@
 
 #include "as5600.h"
 #include "i2c.h"
+#include "motor_control_config.h"
 
-#define MOTOR_FEEDBACK_ANGLE_PERIOD_MS 20U
-#define MOTOR_FEEDBACK_SPEED_PERIOD_MS 200U
 #define MOTOR_FEEDBACK_I2C_RECOVERY_ERROR_THRESHOLD 5U
 #define MOTOR_FEEDBACK_I2C_RECOVERY_PERIOD_MS 500U
 #define MOTOR_FEEDBACK_I2C_RECOVERY_DELAY_MS 2U
-/* AS5600 raw delta sign is inverted so FWD motor rotation reports positive RPM. */
-#define MOTOR_FEEDBACK_DELTA_SIGN (-1)
 
 static uint8_t g_angle_valid = 0U;
 static uint8_t g_speed_valid = 0U;
@@ -31,6 +28,17 @@ static uint32_t g_error_count = 0U;
 static uint32_t g_consecutive_error_count = 0U;
 static uint32_t g_last_recovery_tick = 0U;
 static HAL_StatusTypeDef g_last_hal_status = HAL_OK;
+static uint8_t g_status_valid = 0U;
+static uint8_t g_magnet_detected = 0U;
+static uint8_t g_magnet_too_weak = 0U;
+static uint8_t g_magnet_too_strong = 0U;
+static uint8_t g_status = 0U;
+static uint8_t g_agc = 0U;
+static uint16_t g_magnitude = 0U;
+static uint32_t g_diag_update_tick = 0U;
+static uint32_t g_last_i2c_error = 0U;
+static HAL_I2C_StateTypeDef g_last_i2c_state = HAL_I2C_STATE_RESET;
+static HAL_StatusTypeDef g_last_diag_hal_status = HAL_OK;
 static MotorFeedbackSnapshot_t g_snapshot;
 
 static uint32_t MotorFeedback_EnterCritical(void)
@@ -65,11 +73,22 @@ static void MotorFeedback_UpdateSnapshot(void)
   g_snapshot.error_count = g_error_count;
   g_snapshot.consecutive_error_count = g_consecutive_error_count;
   g_snapshot.last_hal_status = g_last_hal_status;
+  g_snapshot.status_valid = g_status_valid;
+  g_snapshot.magnet_detected = g_magnet_detected;
+  g_snapshot.magnet_too_weak = g_magnet_too_weak;
+  g_snapshot.magnet_too_strong = g_magnet_too_strong;
+  g_snapshot.status = g_status;
+  g_snapshot.agc = g_agc;
+  g_snapshot.magnitude = g_magnitude;
+  g_snapshot.diag_update_tick = g_diag_update_tick;
+  g_snapshot.last_i2c_error = g_last_i2c_error;
+  g_snapshot.last_i2c_state = g_last_i2c_state;
+  g_snapshot.last_diag_hal_status = g_last_diag_hal_status;
 }
 
 static int32_t MotorFeedback_AlignDeltaToMotorDirection(int32_t delta_raw)
 {
-  return delta_raw * MOTOR_FEEDBACK_DELTA_SIGN;
+  return delta_raw * MOTOR_SENSOR_DELTA_SIGN;
 }
 
 static void MotorFeedback_TryRecoverI2c(uint32_t now)
@@ -115,6 +134,17 @@ void MotorFeedback_Init(void)
   g_consecutive_error_count = 0U;
   g_last_recovery_tick = 0U;
   g_last_hal_status = HAL_OK;
+  g_status_valid = 0U;
+  g_magnet_detected = 0U;
+  g_magnet_too_weak = 0U;
+  g_magnet_too_strong = 0U;
+  g_status = 0U;
+  g_agc = 0U;
+  g_magnitude = 0U;
+  g_diag_update_tick = 0U;
+  g_last_i2c_error = 0U;
+  g_last_i2c_state = HAL_I2C_GetState(&hi2c1);
+  g_last_diag_hal_status = HAL_OK;
 
   primask = MotorFeedback_EnterCritical();
   MotorFeedback_UpdateSnapshot();
@@ -146,6 +176,12 @@ void MotorFeedback_Update(uint32_t now)
     g_error_count++;
     g_consecutive_error_count++;
     g_last_hal_status = status;
+    g_status_valid = 0U;
+    g_magnet_detected = 0U;
+    g_magnet_too_weak = 0U;
+    g_magnet_too_strong = 0U;
+    g_last_i2c_error = HAL_I2C_GetError(&hi2c1);
+    g_last_i2c_state = HAL_I2C_GetState(&hi2c1);
     MotorFeedback_UpdateSnapshot();
     MotorFeedback_ExitCritical(primask);
     MotorFeedback_TryRecoverI2c(now);
@@ -153,6 +189,15 @@ void MotorFeedback_Update(uint32_t now)
   }
 
   {
+    uint8_t next_status_valid = 0U;
+    uint8_t next_magnet_detected = 0U;
+    uint8_t next_magnet_too_weak = 0U;
+    uint8_t next_magnet_too_strong = 0U;
+    uint8_t next_status = g_status;
+    uint8_t next_agc = g_agc;
+    uint16_t next_magnitude = g_magnitude;
+    uint32_t next_diag_update_tick = g_diag_update_tick;
+    HAL_StatusTypeDef next_diag_hal_status;
     uint8_t next_has_prev = g_has_prev;
     uint8_t next_speed_valid = g_speed_valid;
     uint16_t next_prev_raw = g_prev_raw;
@@ -162,6 +207,26 @@ void MotorFeedback_Update(uint32_t now)
     int32_t next_total_raw_turns = g_total_raw_turns;
     uint32_t next_speed_sample_seq = g_speed_sample_seq;
     uint32_t next_speed_update_tick = g_speed_update_tick;
+
+    next_diag_hal_status = AS5600_ReadStatus(&hi2c1, &next_status);
+    if (next_diag_hal_status == HAL_OK)
+    {
+      next_status_valid = 1U;
+      next_magnet_detected = ((next_status & AS5600_STATUS_MD) != 0U) ? 1U : 0U;
+      next_magnet_too_weak = ((next_status & AS5600_STATUS_ML) != 0U) ? 1U : 0U;
+      next_magnet_too_strong = ((next_status & AS5600_STATUS_MH) != 0U) ? 1U : 0U;
+    }
+
+    if ((now - g_diag_update_tick) >= MOTOR_FEEDBACK_DIAG_PERIOD_MS)
+    {
+      HAL_StatusTypeDef agc_status = AS5600_ReadAgc(&hi2c1, &next_agc);
+      HAL_StatusTypeDef mag_status = AS5600_ReadMagnitude(&hi2c1, &next_magnitude);
+      next_diag_update_tick = now;
+      if (next_diag_hal_status == HAL_OK)
+      {
+        next_diag_hal_status = (agc_status != HAL_OK) ? agc_status : mag_status;
+      }
+    }
 
     if (g_has_prev == 0U)
     {
@@ -226,6 +291,17 @@ void MotorFeedback_Update(uint32_t now)
       g_update_count++;
       g_consecutive_error_count = 0U;
       g_last_hal_status = HAL_OK;
+      g_status_valid = next_status_valid;
+      g_magnet_detected = next_magnet_detected;
+      g_magnet_too_weak = next_magnet_too_weak;
+      g_magnet_too_strong = next_magnet_too_strong;
+      g_status = next_status;
+      g_agc = next_agc;
+      g_magnitude = next_magnitude;
+      g_diag_update_tick = next_diag_update_tick;
+      g_last_i2c_error = HAL_I2C_GetError(&hi2c1);
+      g_last_i2c_state = HAL_I2C_GetState(&hi2c1);
+      g_last_diag_hal_status = next_diag_hal_status;
       MotorFeedback_UpdateSnapshot();
       MotorFeedback_ExitCritical(primask);
     }

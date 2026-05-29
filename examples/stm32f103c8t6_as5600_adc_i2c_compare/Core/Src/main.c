@@ -44,6 +44,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define ENABLE_BOOT_UART_LOG 0U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -122,10 +123,12 @@ int main(void)
   MX_USART2_UART_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
+#if ENABLE_BOOT_UART_LOG
   /* 直接发送字符串：用于确认 USART2 外设与引脚配置正常。 */
   HAL_UART_Transmit(&huart2, (uint8_t *)"UART direct test\r\n", 18, 100);
   /* printf 测试：用于确认重定向链路（__io_putchar/_write）正常。 */
   printf("printf test\r\n");
+#endif
 
   MotorDriver_Init();
   MotorControl_Init();
@@ -134,14 +137,20 @@ int main(void)
   /* STM32F1 的 ADC 在使用前建议校准，可减小转换偏差。 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
   {
+#if ENABLE_BOOT_UART_LOG
     printf("[ERR] ADC calibration failed\r\n");
+#endif
   }
   else
   {
+#if ENABLE_BOOT_UART_LOG
     printf("[OK ] ADC calibration done\r\n");
+#endif
   }
 
+#if ENABLE_BOOT_UART_LOG
   printf("AS5600 ADC/I2C compare start\r\n");
+#endif
   /* USER CODE END 2 */
 
   /* Init scheduler */
