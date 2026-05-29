@@ -39,7 +39,9 @@ typedef enum {
   MOTOR_STOP_REASON_MODE_CHANGED = 3,
   MOTOR_STOP_REASON_FEEDBACK_LOST = 4,
   MOTOR_STOP_REASON_START_DENIED_NO_ANGLE = 5,
-  MOTOR_STOP_REASON_START_DENIED_SENSOR_DIAG = 6
+  MOTOR_STOP_REASON_START_DENIED_SENSOR_DIAG = 6,
+  MOTOR_STOP_REASON_START_DENIED_FOC_NOT_CALIBRATED = 7,
+  MOTOR_STOP_REASON_FOC_CALIBRATION_FAILED = 8
 } MotorStopReason_t;
 
 typedef enum {
@@ -48,7 +50,8 @@ typedef enum {
   MOTOR_FAULT_STARTUP_FEEDBACK_TIMEOUT = 2,
   MOTOR_FAULT_INVALID_STATE = 3,
   MOTOR_FAULT_SENSOR_DIAG = 4,
-  MOTOR_FAULT_ANGLE_STALE = 5
+  MOTOR_FAULT_ANGLE_STALE = 5,
+  MOTOR_FAULT_FOC_CALIBRATION_FAILED = 6
 } MotorFault_t;
 
 void MotorControl_Init(void);
@@ -102,8 +105,8 @@ int32_t MotorControl_GetFocVelocityErrorX10(void);
 int32_t MotorControl_GetFocPositionErrorDegX10(void);
 int32_t MotorControl_GetFocVoltageTargetMv(void);
 uint8_t MotorControl_IsFocZeroCalibrated(void);
-/* Captures the present AS5600 angle as the software FOC electrical zero. */
-void MotorControl_CalibrateFocZero(void);
+/* Runs the low-voltage d-axis alignment flow and captures FOC electrical zero. */
+uint8_t MotorControl_CalibrateFocZero(void);
 
 #ifdef __cplusplus
 }

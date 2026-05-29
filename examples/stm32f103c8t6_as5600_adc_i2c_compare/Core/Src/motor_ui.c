@@ -67,6 +67,7 @@ static UiButton g_btn_dir = {20, 244, 90, 48, "DIR", C_BTN};
 static UiButton g_btn_set = {130, 244, 90, 48, "SET", C_BTN};
 static UiButton g_btn_cal = {180, 6, 50, 24, "CAL", C_CAL};
 static UiButton g_btn_back_top = {180, 6, 50, 24, "<", C_CAL};
+static UiButton g_btn_foc_cal = {120, 6, 50, 24, "FCAL", C_CAL};
 static UiButton g_btn_spd_minus = {20, 120, 90, 48, "SPD-", C_BTN};
 static UiButton g_btn_spd_plus = {130, 120, 90, 48, "SPD+", C_BTN};
 static UiButton g_btn_duty_minus = {20, 190, 90, 48, "DUTY-", C_BTN};
@@ -93,6 +94,7 @@ static uint16_t g_touch_y = 0U;
 static TouchCalibration_t g_prev_cal;
 static UiStatusCache g_status_cache;
 static uint8_t g_stop_button_fault_view = 0xFFU;
+static uint8_t g_foc_cal_button_visible = 0xFFU;
 static CalPoint g_cal_points[5] = {
   {"LT", 20, 20, 0, 0},
   {"RT", 220, 20, 0, 0},
@@ -110,6 +112,14 @@ static uint8_t Ui_Hit(const UiButton *b, uint16_t x, uint16_t y)
   return (x >= b->x) && (x < (b->x + b->w)) && (y >= b->y) && (y < (b->y + b->h));
 }
 
+static uint8_t Ui_IsFocMode(void)
+{
+  MotorControlMode_t mode = MotorControl_GetMode();
+  return ((mode == MOTOR_MODE_FOC_VOLTAGE) ||
+          (mode == MOTOR_MODE_FOC_VELOCITY) ||
+          (mode == MOTOR_MODE_FOC_POSITION)) ? 1U : 0U;
+}
+
 static uint8_t Ui_ButtonId(uint16_t x, uint16_t y)
 {
   if (g_ui_mode == UI_MODE_MAIN)
@@ -124,6 +134,7 @@ static uint8_t Ui_ButtonId(uint16_t x, uint16_t y)
 
   if (g_ui_mode == UI_MODE_SET)
   {
+    if ((Ui_IsFocMode() != 0U) && Ui_Hit(&g_btn_foc_cal, x, y)) return 18U;
     if (Ui_Hit(&g_btn_back_top, x, y)) return 11U;
     if (Ui_Hit(&g_btn_spd_minus, x, y)) return 12U;
     if (Ui_Hit(&g_btn_spd_plus, x, y)) return 13U;
@@ -160,6 +171,23 @@ static void Ui_UpdateStopButton(void)
   {
     Ui_DrawStopButton();
   }
+}
+
+static void Ui_UpdateFocCalButton(void)
+{
+  uint8_t visible = Ui_IsFocMode();
+
+  if (visible == g_foc_cal_button_visible)
+  {
+    return;
+  }
+
+  LCD_FillRect(g_btn_foc_cal.x, g_btn_foc_cal.y, g_btn_foc_cal.w, g_btn_foc_cal.h, C_BG);
+  if (visible != 0U)
+  {
+    Ui_DrawButton(&g_btn_foc_cal);
+  }
+  g_foc_cal_button_visible = visible;
 }
 
 static void Ui_FormatDutyAmp(char *line, size_t line_size)
@@ -282,6 +310,8 @@ static void Ui_DrawSetScreen(void)
   LCD_DrawText(10U, 8U, "OPEN LOOP SET", C_FG, C_BG);
   LCD_DrawRect(4U, 4U, 232U, 24U, C_FG);
   Ui_DrawButton(&g_btn_back_top);
+  g_foc_cal_button_visible = 0xFFU;
+  Ui_UpdateFocCalButton();
   Ui_DrawSetStatus();
   Ui_DrawButton(&g_btn_spd_minus);
   Ui_DrawButton(&g_btn_spd_plus);
@@ -295,6 +325,8 @@ static void Ui_DrawSetStatus(void)
 {
   char line[32];
 
+  Ui_UpdateFocCalButton();
+
   if (MotorControl_GetMode() == MOTOR_MODE_SPEED_CLOSED_LOOP)
   {
     int32_t tr = MotorControl_GetTargetRpmX10();
@@ -305,8 +337,9 @@ static void Ui_DrawSetStatus(void)
   }
   else if (MotorControl_GetMode() == MOTOR_MODE_FOC_VOLTAGE)
   {
-    snprintf(line, sizeof(line), "FocV:%ldmV Uq:%ld",
+    snprintf(line, sizeof(line), "FocV:%ld Z:%u Uq:%ld",
              (long)MotorControl_GetFocVoltageTargetMv(),
+             (unsigned int)MotorControl_IsFocZeroCalibrated(),
              (long)MotorControl_GetFocUqMv());
   }
   else if (MotorControl_GetMode() == MOTOR_MODE_FOC_VELOCITY)
@@ -382,6 +415,8 @@ static const char *Ui_GetMotorStateText(void)
           return "FAULT MAG";
         case MOTOR_FAULT_ANGLE_STALE:
           return "FAULT ANG";
+        case MOTOR_FAULT_FOC_CALIBRATION_FAILED:
+          return "FAULT CAL";
         case MOTOR_FAULT_NONE:
         default:
           return "FAULT";
@@ -395,6 +430,10 @@ static const char *Ui_GetMotorStateText(void)
           return "STOP NO ANG";
         case MOTOR_STOP_REASON_START_DENIED_SENSOR_DIAG:
           return "STOP MAG";
+        case MOTOR_STOP_REASON_START_DENIED_FOC_NOT_CALIBRATED:
+          return "STOP NO CAL";
+        case MOTOR_STOP_REASON_FOC_CALIBRATION_FAILED:
+          return "STOP CAL";
         case MOTOR_STOP_REASON_DIRECTION_CHANGED:
           return "STOP DIR";
         case MOTOR_STOP_REASON_MODE_CHANGED:
@@ -923,6 +962,13 @@ static void Ui_HandleSetTouch(uint32_t now)
         else if (hit == 15U)
         {
           MotorControl_DutyUp();
+          Ui_DrawSetStatus();
+        }
+        else if (hit == 18U)
+        {
+          Ui_DrawStatusLine(48U, "CAL FOC", g_status_cache.speed, sizeof(g_status_cache.speed));
+          (void)MotorControl_CalibrateFocZero();
+          Ui_StatusInvalidate();
           Ui_DrawSetStatus();
         }
       }

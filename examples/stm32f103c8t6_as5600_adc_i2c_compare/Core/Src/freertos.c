@@ -26,6 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "motor_control.h"
+#include "motor_control_config.h"
 #include "motor_feedback.h"
 #include "motor_ui.h"
 
@@ -241,7 +242,7 @@ void StartFeedbackTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    wake_tick += 20U;
+    wake_tick += MOTOR_FEEDBACK_TASK_PERIOD_MS;
     MotorFeedback_Update(HAL_GetTick());
     (void)osDelayUntil(wake_tick);
   }

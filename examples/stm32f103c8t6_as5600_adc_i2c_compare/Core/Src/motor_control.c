@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "motor_control_config.h"
 #include "motor_driver.h"
 #include "motor_feedback.h"
 
@@ -36,34 +37,6 @@
 #define MOTOR_SPEED_PID_OUTPUT_LIMIT_MS 25
 #define MOTOR_CL_FEEDBACK_TIMEOUT_MS  500U
 #define MOTOR_CL_STARTUP_GRACE_MS    2000U
-#define MOTOR_FOC_POLE_PAIRS          7
-#define MOTOR_FOC_SUPPLY_MV           12000
-#define MOTOR_FOC_VOLTAGE_LIMIT_MV    1000
-#define MOTOR_FOC_ALIGN_VOLTAGE_MV    500
-#define MOTOR_FOC_ALIGN_TIME_MS       250U
-#define MOTOR_FOC_ANGLE_TIMEOUT_MS    120U
-#define MOTOR_FOC_UQ_SLEW_MV          20
-#define MOTOR_FOC_POSITION_STEP_DEG_X10 100
-#define MOTOR_FOC_POSITION_LIMIT_DEG_X10 36000
-#define MOTOR_FOC_POSITION_ERROR_LIMIT_DEG_X10 7200
-#define MOTOR_FOC_TARGET_RPM_LIMIT_X10 1200
-#define MOTOR_FOC_SPEED_PID_KP_NUM    1
-#define MOTOR_FOC_SPEED_PID_KP_DEN    4
-#define MOTOR_FOC_SPEED_PID_KI_NUM    1
-#define MOTOR_FOC_SPEED_PID_KI_DEN    80
-#define MOTOR_FOC_SPEED_PID_KD_NUM    0
-#define MOTOR_FOC_SPEED_PID_KD_DEN    1
-#define MOTOR_FOC_SPEED_PID_INTEGRATOR_LIMIT 6000
-#define MOTOR_FOC_SPEED_PID_OUTPUT_LIMIT_MV MOTOR_FOC_VOLTAGE_LIMIT_MV
-#define MOTOR_FOC_POSITION_PID_KP_NUM 1
-#define MOTOR_FOC_POSITION_PID_KP_DEN 30
-#define MOTOR_FOC_POSITION_PID_KI_NUM 0
-#define MOTOR_FOC_POSITION_PID_KI_DEN 1
-#define MOTOR_FOC_POSITION_PID_KD_NUM 0
-#define MOTOR_FOC_POSITION_PID_KD_DEN 1
-#define MOTOR_FOC_POSITION_PID_INTEGRATOR_LIMIT 0
-#define MOTOR_FOC_SENSOR_DELTA_SIGN   (-1)
-
 static const uint16_t kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MAX] = {
   310U,
   210U,
@@ -460,6 +433,17 @@ static void MotorControl_StopWithFault(MotorStopReason_t reason, MotorFault_t fa
   MotorControl_StopToState(reason, fault, MOTOR_STATE_FAULT);
 }
 
+static void MotorControl_SetCalibrationFailed(void)
+{
+  MotorDriver_SetAllPwmZero();
+  MotorDriver_Disable();
+  MotorControl_ResetClosedLoopTracking(0U);
+  MotorControl_ResetFocTracking();
+  g_stop_reason = MOTOR_STOP_REASON_FOC_CALIBRATION_FAILED;
+  g_fault = MOTOR_FAULT_FOC_CALIBRATION_FAILED;
+  g_state = MOTOR_STATE_FAULT;
+}
+
 static uint8_t MotorControl_IsFocMode(MotorControlMode_t mode)
 {
   return ((mode == MOTOR_MODE_FOC_VOLTAGE) ||
@@ -529,6 +513,12 @@ static uint32_t MotorControl_RawAngleToElectricalPhaseQ16(uint16_t raw_angle)
   uint32_t mech_phase = MotorControl_RawAngleToMechanicalPhaseQ16(raw_angle);
   return MotorControl_NormalizePhaseQ16(((int64_t)mech_phase * MOTOR_FOC_POLE_PAIRS) +
                                         (int64_t)g_foc_zero_offset_q16);
+}
+
+static uint32_t MotorControl_GetQAxisOffsetQ16(void)
+{
+  int64_t offset = ((int64_t)MOTOR_PHASE_FULL * MOTOR_FOC_Q_AXIS_OFFSET_DEG) / 360LL;
+  return MotorControl_NormalizePhaseQ16(offset * MOTOR_FOC_Q_AXIS_SIGN);
 }
 
 static void MotorControl_CaptureFocZeroFromRaw(uint16_t raw_angle)
@@ -615,6 +605,13 @@ static void MotorControl_ApplyFocVoltage(int32_t uq_mv, uint16_t raw_angle)
   uint32_t elec_phase = MotorControl_RawAngleToElectricalPhaseQ16(raw_angle);
   uint16_t amplitude_permyriad;
 
+  /*
+   * The captured zero offset is the rotor d-axis alignment point.
+   * Voltage-mode FOC torque command Uq must be applied on the q-axis, +/-90
+   * electrical degrees from d. Negative Uq is an additional 180-degree flip.
+   */
+  elec_phase = MotorControl_NormalizePhaseQ16((int64_t)elec_phase +
+                                              (int64_t)MotorControl_GetQAxisOffsetQ16());
   uq_mv = MotorSpeedPid_ClampI32(uq_mv,
                                  -MOTOR_FOC_VOLTAGE_LIMIT_MV,
                                  MOTOR_FOC_VOLTAGE_LIMIT_MV);
@@ -718,7 +715,12 @@ void MotorControl_Start(void)
 
   if ((MotorControl_IsFocMode(g_mode) != 0U) && (g_foc_zero_valid == 0U))
   {
+#if MOTOR_FOC_ALLOW_SOFTWARE_ZERO_FALLBACK
     MotorControl_CaptureFocZeroFromRaw(feedback.raw_angle);
+#else
+    g_stop_reason = MOTOR_STOP_REASON_START_DENIED_FOC_NOT_CALIBRATED;
+    return;
+#endif
   }
 
   g_current_period_ms = kSpeedPeriodMs[MOTOR_SPEED_LEVEL_MIN - 1U];
@@ -1216,20 +1218,21 @@ int32_t MotorControl_GetFocPositionErrorDegX10(void) { return g_foc_position_err
 int32_t MotorControl_GetFocVoltageTargetMv(void) { return MotorControl_GetSignedFocVoltageTargetMv(); }
 uint8_t MotorControl_IsFocZeroCalibrated(void) { return g_foc_zero_valid; }
 
-void MotorControl_CalibrateFocZero(void)
+uint8_t MotorControl_CalibrateFocZero(void)
 {
   MotorFeedbackSnapshot_t feedback;
   uint16_t align_amplitude;
 
   if ((g_state != MOTOR_STATE_STOPPED) || (g_fault != MOTOR_FAULT_NONE))
   {
-    return;
+    return 0U;
   }
 
   MotorFeedback_GetSnapshot(&feedback);
   if (MotorControl_IsFeedbackReadyForFoc(&feedback, HAL_GetTick()) == 0U)
   {
-    return;
+    MotorControl_SetCalibrationFailed();
+    return 0U;
   }
 
   align_amplitude = (uint16_t)(((uint32_t)MOTOR_FOC_ALIGN_VOLTAGE_MV *
@@ -1238,6 +1241,12 @@ void MotorControl_CalibrateFocZero(void)
   MotorDriver_SetAllPwmZero();
   MotorDriver_Enable();
   g_state = MOTOR_STATE_CALIBRATION;
+  g_stop_reason = MOTOR_STOP_REASON_NONE;
+  g_fault = MOTOR_FAULT_NONE;
+  /*
+   * Calibration applies a fixed d-axis voltage vector. Runtime Uq output is
+   * shifted to q-axis by MotorControl_ApplyFocVoltage().
+   */
   MotorControl_ApplyThreePhasePwm(0U, align_amplitude);
   HAL_Delay(MOTOR_FOC_ALIGN_TIME_MS);
   MotorFeedback_GetSnapshot(&feedback);
@@ -1247,9 +1256,14 @@ void MotorControl_CalibrateFocZero(void)
 
   if (MotorControl_IsFeedbackReadyForFoc(&feedback, HAL_GetTick()) == 0U)
   {
-    return;
+    MotorControl_SetCalibrationFailed();
+    return 0U;
   }
 
   MotorControl_CaptureFocZeroFromRaw(feedback.raw_angle);
   MotorControl_ResetFocTracking();
+  g_stop_reason = MOTOR_STOP_REASON_NONE;
+  g_fault = MOTOR_FAULT_NONE;
+  g_state = MOTOR_STATE_STOPPED;
+  return 1U;
 }

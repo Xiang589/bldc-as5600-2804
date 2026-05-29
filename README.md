@@ -2,7 +2,7 @@
 
 基于 STM32F103C8T6、AS5600 磁编码器与三相 BLDC 驱动的电机控制实验平台。
 
-本仓库是一个可上板验证的嵌入式电机控制实验项目，不是量产级 FOC 控制器。当前代码已经具备 OPEN 开环正弦 PWM 驱动、AS5600 角度/RPM 反馈、LCD/touch 调试界面、FreeRTOS 任务拆分、基础安全状态机，以及第一版 voltage-mode FOC / FOC speed loop / FOC position loop 代码框架。FOC 相关功能仍需要真实硬件校准、方向确认和 PID 参数整定；电流环、力矩闭环和生产级保护未实现。
+本仓库是可上板验证的嵌入式电机控制实验项目，不是量产级 FOC 控制器。当前代码已经具备 OPEN 开环正弦 PWM 驱动、AS5600 角度/RPM 反馈、LCD/touch 调试界面、FreeRTOS 任务拆分、基础安全状态机，以及第一版 voltage-mode FOC / FOC speed loop / FOC position loop 代码框架。FOC 相关功能仍需要真实硬件校准、方向确认和 PID 参数整定；电流环、力矩闭环和生产级保护未实现。
 
 ## 中文说明
 
@@ -14,7 +14,7 @@
 examples/stm32f103c8t6_as5600_adc_i2c_compare
 ```
 
-项目使用 TIM1 CH1/CH2/CH3 生成 U/V/W 三相 PWM，通过 `FOCMINI_EN` 控制三相驱动板使能；AS5600 通过 I2C1 提供 12-bit raw angle，并由 `FeedbackTask` 周期采样形成一致的反馈快照；ILI9341 LCD 与 XPT2046 touch 提供本地调试界面；FreeRTOS 中的 `ControlTask`、`FeedbackTask`、`UITask`、`MonitorTask` 分别承担控制、传感器采样、UI、心跳/监控职责。
+项目使用 TIM1 CH1/CH2/CH3 生成 U/V/W 三相 PWM，通过 `FOCMINI_EN` 控制三相驱动板使能。AS5600 通过 I2C1 提供 12-bit raw angle，并由 `FeedbackTask` 周期采样形成一致的反馈快照。ILI9341 LCD 与 XPT2046 touch 提供本地调试界面。FreeRTOS 中的 `ControlTask`、`FeedbackTask`、`UITask`、`MonitorTask` 分别承担控制、传感器采样、UI、心跳/监控职责。
 
 ### Current Status / 当前状态
 
@@ -29,10 +29,10 @@ examples/stm32f103c8t6_as5600_adc_i2c_compare
 | FreeRTOS task split | Completed | Control / Feedback / UI / Monitor task 已拆分。 |
 | LCD/touch 调试界面 | Completed | 支持启停、方向、模式、速度/DUTY、状态和 fault 显示。 |
 | CLSPD speed PID | Prototype / In Progress | 调节开环相位推进 period，已上板标定过一版，但仍不是完整生产级速度环。 |
-| Voltage-mode FOC | Implemented / needs hardware tuning | `Uq` 电压命令锁定到 AS5600 电角度，`Ud=0`，复用三相 PWM 输出。 |
+| Voltage-mode FOC | Implemented / needs hardware validation | `Uq` 电压命令相对校准 d 轴偏移 90° 电角度，`Ud=0`，复用三相 PWM 输出。 |
 | FOC speed loop | Implemented / needs hardware tuning | target RPM -> speed PID -> `Uq` -> voltage FOC。参数保守，未完成实机整定。 |
 | FOC position loop | Implemented / needs hardware tuning | target position -> position PID/P -> target velocity -> speed PID -> `Uq` -> voltage FOC。 |
-| FOC zero alignment | Implemented / needs hardware validation | 提供低电压固定矢量校准入口，并保留启动时的软件零点捕获兜底。 |
+| FOC zero alignment | Implemented / needs hardware validation | SET 页 FOC 模式下提供 `FCAL` 入口；未校准时 FOCV/FOCSPD/FOCPOS 拒绝启动。 |
 | Current loop | Planned / Not Implemented | 当前工程没有已验证的相电流采样链路。 |
 | Torque closed loop | Not Implemented | 当前 `Uq` 只是电压命令，不代表实际电流或真实力矩闭环。 |
 | Production-grade PID tuning | Not Implemented | 速度环、位置环仍需上板调参。 |
@@ -65,19 +65,20 @@ examples/stm32f103c8t6_as5600_adc_i2c_compare
 ### Software Architecture / 软件结构
 
 ```text
-Core/Src/as5600.c          AS5600 register access: RAW_ANGLE, STATUS, AGC, MAGNITUDE
-Core/Src/motor_feedback.c  FeedbackTask-side angle/RPM sampling, diagnostics, snapshot, I2C recovery
-Core/Src/motor_driver.c    TIM1 PWM output and FOCMINI_EN enable/disable wrapper
-Core/Src/motor_control.c   State machine, OPEN/CLSPD, voltage FOC, speed loop, position loop
-Core/Src/motor_ui.c        LCD/touch UI, mode switching, status/debug display
-Core/Src/freertos.c        ControlTask, FeedbackTask, UITask, MonitorTask
+Core/Inc/motor_control_config.h  Motor/FOC/PID/feedback timing configuration
+Core/Src/as5600.c                AS5600 register access: RAW_ANGLE, STATUS, AGC, MAGNITUDE
+Core/Src/motor_feedback.c        FeedbackTask-side angle/RPM sampling, diagnostics, snapshot, I2C recovery
+Core/Src/motor_driver.c          TIM1 PWM output and FOCMINI_EN enable/disable wrapper
+Core/Src/motor_control.c         State machine, OPEN/CLSPD, voltage FOC, speed loop, position loop
+Core/Src/motor_ui.c              LCD/touch UI, mode switching, FOC zero calibration entry, status/debug display
+Core/Src/freertos.c              ControlTask, FeedbackTask, UITask, MonitorTask
 ```
 
 ### Control Modes / 控制模式
 
 - `OPEN`: 传统开环正弦 PWM，用 speed level 控制相位推进周期，用 DUTY 控制调制幅度。
 - `CLSPD`: 原型速度闭环，AS5600 RPM -> PID -> open-loop phase period，保留用于对照测试。
-- `FOCV`: voltage-mode FOC，AS5600 raw angle -> mechanical angle -> electrical angle，输出 `Ud=0`、`Uq=target_voltage` 的三相正弦电压。
+- `FOCV`: voltage-mode FOC，AS5600 raw angle -> mechanical angle -> electrical angle，输出 `Ud=0`、`Uq=target_voltage` 的三相正弦电压；`Uq` 相位相对 d 轴零点偏移 90° 电角度。
 - `FOCSPD`: FOC 速度环，target RPM -> speed PID -> `Uq` -> voltage FOC。
 - `FOCPOS`: FOC 位置环，target position -> position controller -> target velocity -> speed PID -> `Uq` -> voltage FOC。
 
@@ -92,7 +93,8 @@ Core/Src/freertos.c        ControlTask, FeedbackTask, UITask, MonitorTask
   electrical_angle = normalize(mechanical_angle * 7 + zero_electric_offset)
   ```
 
-- voltage-mode FOC 使用 `Ud=0`、`Uq` 电压命令，不实现电流环。
+- FOC zero alignment 使用低电压固定 d 轴矢量吸附转子；运行时 `Uq` 输出再按配置偏移到 q 轴。默认不允许把启动瞬间 raw angle 静默当作 FOC 零点。
+- 当前 `FeedbackTask` 周期为 10ms，angle update period 为 10ms，speed update period 为 50ms，diagnostic update period 为 200ms；I2C1 配置仍保持 CubeMX 现状，未强行改 400kHz。
 - speed loop 只在新的 AS5600 speed sample 到来时更新，避免重复积分旧 RPM。
 - position loop 级联到 speed loop，不直接把位置误差写入 PWM。
 - STOP/FAULT 路径保持：先清 PWM，再关闭 EN，再更新 state/reason/fault。
@@ -122,9 +124,9 @@ Core/Src/freertos.c        ControlTask, FeedbackTask, UITask, MonitorTask
 
 ### Roadmap / 后续计划
 
-- 上板确认 AS5600 磁铁诊断阈值、FOC 角度方向和零电角度校准流程。
+- 上板确认 AS5600 磁铁诊断阈值、FOC 角度方向、q-axis sign 和零电角度校准流程。
+- 上板确认 10ms angle / 50ms speed 反馈周期在当前 100kHz I2C 配置下的稳定性。
 - 逐步整定 FOC speed PID 和 position loop 参数。
-- 评估是否需要把 AS5600 采样周期从 20ms 降低到更适合 FOC 的周期。
 - 若硬件增加并验证相电流采样，再规划 current loop / torque loop。
 - 后续可评估 SVPWM、速度滤波和更完整的故障保护。
 
@@ -144,13 +146,13 @@ examples/stm32f103c8t6_as5600_adc_i2c_compare
 
 Completed work includes the STM32CubeIDE project, TIM1 three-phase PWM output, OPEN-mode sine drive, AS5600 raw angle/RPM feedback, I2C recovery, FreeRTOS task split, LCD/touch UI, and the basic safety state machine.
 
-Implemented but still requiring hardware tuning:
+Implemented but still requiring hardware validation/tuning:
 
 - AS5600 magnetic diagnostics through STATUS / AGC / MAGNITUDE.
-- Voltage-mode FOC using AS5600 electrical angle and bounded `Uq` voltage command.
+- Voltage-mode FOC using AS5600 electrical angle and bounded `Uq` voltage command. `Uq` is shifted 90 electrical degrees from the calibrated d-axis.
 - FOC speed loop: target RPM -> speed PID -> `Uq` -> voltage FOC.
 - FOC position loop: target position -> target velocity -> speed PID -> `Uq` -> voltage FOC.
-- Low-voltage FOC zero alignment entry.
+- Low-voltage FOC zero alignment entry through the SET-page `FCAL` button.
 
 Still planned / not implemented:
 
@@ -168,7 +170,7 @@ Still planned / not implemented:
 | RTOS task split | Completed | Control, feedback, UI, and monitor tasks. |
 | CLSPD speed PID | Prototype / In Progress | Adjusts open-loop phase period, kept as a comparison path. |
 | AS5600 magnetic diagnostics | Implemented / needs hardware validation | STATUS, AGC, MAGNITUDE are sampled into the snapshot. |
-| Voltage-mode FOC | Implemented / needs hardware tuning | `Ud=0`, bounded `Uq`, rotor electrical-angle locked sine output. |
+| Voltage-mode FOC | Implemented / needs hardware validation | `Ud=0`, bounded `Uq`, q-axis output is shifted 90 electrical degrees from the calibrated d-axis. |
 | FOC speed loop | Implemented / needs hardware tuning | Conservative PID outputs `Uq`. |
 | FOC position loop | Implemented / needs hardware tuning | Cascaded position -> velocity -> voltage FOC path. |
 | Current loop | Planned / Not Implemented | No verified phase-current sampling path yet. |
@@ -184,7 +186,7 @@ Still planned / not implemented:
 
 ### Build and Flash
 
-Open the STM32CubeIDE project under `examples/stm32f103c8t6_as5600_adc_i2c_compare`, connect the target board and ST-Link, build, flash, and validate on real hardware. Motor behavior, FOC angle direction, zero alignment, speed-loop tuning, and position-loop tuning cannot be verified by compilation alone.
+Open the STM32CubeIDE project under `examples/stm32f103c8t6_as5600_adc_i2c_compare`, connect the target board and ST-Link, build, flash, and validate on real hardware. Motor behavior, FOC angle direction, q-axis sign, zero alignment, speed-loop tuning, and position-loop tuning cannot be verified by compilation alone. FOC modes require explicit `FCAL` zero calibration from the SET page before start; startup does not silently capture the present sensor angle as a valid FOC zero.
 
 ### Notes
 
