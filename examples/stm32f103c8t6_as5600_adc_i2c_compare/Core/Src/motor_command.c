@@ -392,13 +392,11 @@ MotorCommandResult_t MotorCommand_ClearOrCalibrateZero(void)
   uint8_t calibrated;
 
   /*
-   * FOC zero calibration deliberately waits for rotor settling, so it cannot
-   * run inside a hard critical section. Suspending task switches keeps the
-   * ControlTask/UI from touching motor_control while TIM2 HAL tick continues.
+   * FOC zero calibration deliberately waits for rotor settling. Do not suspend
+   * the scheduler here: FeedbackTask must keep refreshing the AS5600 snapshot
+   * that MotorControl_CalibrateFocZero() reads after the wait.
    */
-  vTaskSuspendAll();
   calibrated = MotorControl_CalibrateFocZero();
-  (void)xTaskResumeAll();
 
   if (calibrated == 0U)
   {

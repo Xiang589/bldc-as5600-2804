@@ -115,6 +115,6 @@ python tools/motor_comm_cli.py --port COM5 interactive
 - `comm_uart_dma`: circular RX DMA polling, non-blocking TX DMA, TX busy state.
 - `comm_task`: line assembly, command execution, stream status, watchdog.
 - `comm_protocol`: HAL/RTOS-independent parser.
-- `motor_command`: safety wrapper around `motor_control`; command-driven state changes use short FreeRTOS critical sections, while FOC zero calibration suspends task switches because it intentionally waits for rotor settling.
+- `motor_command`: safety wrapper around `motor_control`; command-driven state changes use short FreeRTOS critical sections, while FOC zero calibration leaves the scheduler running so `FeedbackTask` can refresh the AS5600 snapshot during rotor settling.
 
 The FOC voltage/speed/position paths remain experimental. This protocol does not make FOC, PID tuning, current loop, torque loop, or production safety complete.
