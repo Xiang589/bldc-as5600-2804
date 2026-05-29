@@ -26,7 +26,13 @@
  */
 #define MOTOR_FOC_Q_AXIS_OFFSET_DEG              90
 #define MOTOR_FOC_Q_AXIS_SIGN                    1
-#define MOTOR_FOC_SENSOR_DELTA_SIGN              (-1)
+
+/*
+ * Converts AS5600 raw angle delta to the motor-positive direction.
+ * Feedback RPM, FOC position unwrap, and electrical-angle direction must stay consistent.
+ * If direction is wrong on hardware, check sensor sign, q-axis sign, and phase order first.
+ */
+#define MOTOR_SENSOR_DELTA_SIGN                  (-1)
 
 #define MOTOR_FOC_POSITION_STEP_DEG_X10          100
 #define MOTOR_FOC_POSITION_LIMIT_DEG_X10         36000

@@ -501,7 +501,7 @@ static uint32_t MotorControl_NormalizePhaseQ16(int64_t value)
 static uint32_t MotorControl_RawAngleToMechanicalPhaseQ16(uint16_t raw_angle)
 {
   uint32_t phase = ((uint32_t)(raw_angle & 0x0FFFU) * (MOTOR_PHASE_FULL / 4096U));
-  if (MOTOR_FOC_SENSOR_DELTA_SIGN < 0)
+  if (MOTOR_SENSOR_DELTA_SIGN < 0)
   {
     phase = (phase == 0U) ? 0U : (MOTOR_PHASE_FULL - phase);
   }
@@ -578,7 +578,7 @@ static void MotorControl_UpdateFocPositionFromFeedback(const MotorFeedbackSnapsh
     {
       delta_raw += 4096;
     }
-    g_foc_position_counts += delta_raw * MOTOR_FOC_SENSOR_DELTA_SIGN;
+    g_foc_position_counts += delta_raw * MOTOR_SENSOR_DELTA_SIGN;
     g_foc_prev_raw_angle = feedback->raw_angle;
   }
 

@@ -7,8 +7,6 @@
 #define MOTOR_FEEDBACK_I2C_RECOVERY_ERROR_THRESHOLD 5U
 #define MOTOR_FEEDBACK_I2C_RECOVERY_PERIOD_MS 500U
 #define MOTOR_FEEDBACK_I2C_RECOVERY_DELAY_MS 2U
-/* AS5600 raw delta sign is inverted so FWD motor rotation reports positive RPM. */
-#define MOTOR_FEEDBACK_DELTA_SIGN (-1)
 
 static uint8_t g_angle_valid = 0U;
 static uint8_t g_speed_valid = 0U;
@@ -90,7 +88,7 @@ static void MotorFeedback_UpdateSnapshot(void)
 
 static int32_t MotorFeedback_AlignDeltaToMotorDirection(int32_t delta_raw)
 {
-  return delta_raw * MOTOR_FEEDBACK_DELTA_SIGN;
+  return delta_raw * MOTOR_SENSOR_DELTA_SIGN;
 }
 
 static void MotorFeedback_TryRecoverI2c(uint32_t now)
