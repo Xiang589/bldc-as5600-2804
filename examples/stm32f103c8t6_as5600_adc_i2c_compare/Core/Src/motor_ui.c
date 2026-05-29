@@ -34,6 +34,7 @@ typedef struct {
   uint16_t color;
 } UiButton;
 
+#if ENABLE_TOUCH_CALIBRATION
 typedef struct {
   const char *name;
   uint16_t sx;
@@ -41,6 +42,7 @@ typedef struct {
   uint16_t rx;
   uint16_t ry;
 } CalPoint;
+#endif
 
 typedef struct {
   uint8_t valid;
@@ -65,7 +67,9 @@ static UiButton g_btn_start = {20, 176, 90, 48, "START", C_BTN};
 static UiButton g_btn_stop = {130, 176, 90, 48, "STOP", C_STOP};
 static UiButton g_btn_dir = {20, 244, 90, 48, "DIR", C_BTN};
 static UiButton g_btn_set = {130, 244, 90, 48, "SET", C_BTN};
+#if ENABLE_TOUCH_CALIBRATION
 static UiButton g_btn_cal = {180, 6, 50, 24, "CAL", C_CAL};
+#endif
 static UiButton g_btn_back_top = {180, 6, 50, 24, "<", C_CAL};
 static UiButton g_btn_foc_cal = {120, 6, 50, 24, "FCAL", C_CAL};
 static UiButton g_btn_spd_minus = {20, 120, 90, 48, "SPD-", C_BTN};
@@ -74,27 +78,36 @@ static UiButton g_btn_duty_minus = {20, 190, 90, 48, "DUTY-", C_BTN};
 static UiButton g_btn_duty_plus = {130, 190, 90, 48, "DUTY+", C_BTN};
 static UiButton g_btn_mode = {20, 260, 90, 40, "MODE", C_BTN};
 static UiButton g_btn_back = {130, 260, 90, 40, "BACK", C_BTN};
+#if ENABLE_TOUCH_CALIBRATION
 static UiButton g_btn_yes = {30, 180, 80, 44, "YES", C_BTN};
 static UiButton g_btn_no = {130, 180, 80, 44, "NO", C_STOP};
+#endif
 
 static UiMode_t g_ui_mode = UI_MODE_MAIN;
 static uint32_t g_last_draw = 0U;
+#if ENABLE_TOUCH_CALIBRATION
 static uint32_t g_mode_tick = 0U;
+#endif
 static uint32_t g_touch_sample_tick = 0U;
 static uint8_t g_touch_latch = 0U;
 static uint8_t g_touch_pen = 0U;
 static uint8_t g_touch_has_xy = 0U;
+#if ENABLE_TOUCH_CALIBRATION
 static uint8_t g_cal_wait_release = 0U;
 static uint8_t g_wait_release_before_cal = 0U;
 static uint8_t g_has_flash_cal = 0U;
+#endif
 static uint8_t g_last_hit_btn = 0U;
 static uint8_t g_hit_stable_count = 0U;
 static uint16_t g_touch_x = 0U;
 static uint16_t g_touch_y = 0U;
+#if ENABLE_TOUCH_CALIBRATION
 static TouchCalibration_t g_prev_cal;
+#endif
 static UiStatusCache g_status_cache;
 static uint8_t g_stop_button_fault_view = 0xFFU;
 static uint8_t g_foc_cal_button_visible = 0xFFU;
+#if ENABLE_TOUCH_CALIBRATION
 static CalPoint g_cal_points[5] = {
   {"LT", 20, 20, 0, 0},
   {"RT", 220, 20, 0, 0},
@@ -103,6 +116,7 @@ static CalPoint g_cal_points[5] = {
   {"CT", 120, 160, 0, 0},
 };
 static uint8_t g_cal_index = 0U;
+#endif
 
 static void Ui_DrawSetStatus(void);
 static void Ui_StatusInvalidate(void);
@@ -124,7 +138,9 @@ static uint8_t Ui_ButtonId(uint16_t x, uint16_t y)
 {
   if (g_ui_mode == UI_MODE_MAIN)
   {
+#if ENABLE_TOUCH_CALIBRATION
     if (Ui_Hit(&g_btn_cal, x, y)) return 1U;
+#endif
     if (Ui_Hit(&g_btn_start, x, y)) return 2U;
     if (Ui_Hit(&g_btn_stop, x, y)) return 3U;
     if (Ui_Hit(&g_btn_dir, x, y)) return 4U;
@@ -218,6 +234,7 @@ static const char *Ui_GetModeText(void)
   }
 }
 
+#if ENABLE_TOUCH_CALIBRATION
 static void Cal_DrawCross(uint16_t x, uint16_t y)
 {
   LCD_FillRect((uint16_t)(x - 10U), y, 21U, 1U, C_FG);
@@ -233,6 +250,7 @@ static void Cal_DrawPointScreen(uint8_t i)
   LCD_DrawText(10U, 24U, "PRESS CROSS", C_FG, C_BG);
   Cal_DrawCross(g_cal_points[i].sx, g_cal_points[i].sy);
 }
+#endif
 
 static void Ui_StatusInvalidate(void)
 {
@@ -295,7 +313,9 @@ static void Ui_DrawMainScreen(void)
   LCD_FillScreen(C_BG);
   LCD_DrawText(10U, 8U, "AS5600 OPEN LOOP", C_FG, C_BG);
   LCD_DrawRect(4U, 4U, 232U, 24U, C_FG);
+#if ENABLE_TOUCH_CALIBRATION
   Ui_DrawButton(&g_btn_cal);
+#endif
   Ui_DrawButton(&g_btn_start);
   g_stop_button_fault_view = 0xFFU;
   Ui_DrawStopButton();
@@ -448,6 +468,7 @@ static const char *Ui_GetMotorStateText(void)
   }
 }
 
+#if ENABLE_TOUCH_CALIBRATION
 static void Ui_DrawConfirmScreen(void)
 {
   LCD_FillScreen(C_BG);
@@ -455,13 +476,14 @@ static void Ui_DrawConfirmScreen(void)
   Ui_DrawButton(&g_btn_yes);
   Ui_DrawButton(&g_btn_no);
 }
+#endif
 
 static void Ui_DrawStatus(void)
 {
   const char *state;
   const char *dir;
   MotorFeedbackSnapshot_t feedback;
-  char line[32];
+  char line[48];
 
   if (g_status_cache.valid == 0U)
   {
@@ -486,7 +508,7 @@ static void Ui_DrawStatus(void)
     int32_t pid_output = MotorControl_GetSpeedPidOutputMs();
     int32_t pid_output_abs = pid_output;
     if (pid_output_abs < 0) pid_output_abs = -pid_output_abs;
-    snprintf(line, sizeof(line), "TgtRPM:%ld.%ld P%u O%s%ld",
+    snprintf(line, sizeof(line), "T:%ld.%ld P%u O%s%ld",
              (long)(tr / 10),
              (long)(tr % 10),
              (unsigned int)MotorControl_GetCurrentPeriodMs(),
@@ -604,6 +626,7 @@ static void Ui_DrawStatus(void)
   g_status_cache.valid = 1U;
 }
 
+#if ENABLE_TOUCH_CALIBRATION
 static TouchCalibration_t Cal_Build(void)
 {
   TouchCalibration_t cal = {0};
@@ -801,6 +824,7 @@ static void Ui_HandleCalibration(uint32_t now)
     }
   }
 }
+#endif
 
 static void Ui_HandleMainTouch(uint32_t now)
 {
@@ -858,6 +882,7 @@ static void Ui_HandleMainTouch(uint32_t now)
       if ((g_touch_latch == 0U) && (g_hit_stable_count >= 2U))
       {
         g_touch_latch = 1U;
+#if ENABLE_TOUCH_CALIBRATION
         if (hit == 1U)
         {
 #if TOUCH_DEBUG_PRINT
@@ -866,7 +891,9 @@ static void Ui_HandleMainTouch(uint32_t now)
           g_ui_mode = UI_MODE_CAL_CONFIRM;
           Ui_DrawConfirmScreen();
         }
-        else if (hit == 2U)
+        else
+#endif
+        if (hit == 2U)
         {
 #if TOUCH_DEBUG_PRINT
           printf("[TOUCH] START\r\n");
@@ -993,9 +1020,10 @@ void MotorUi_Init(void)
   if (TouchCalStorage_Load(&cal) != 0U)
   {
     Touch_SetCalibration(&cal);
+#if ENABLE_TOUCH_CALIBRATION
     g_prev_cal = cal;
     g_has_flash_cal = 1U;
-    printf("[CAL] loaded from flash\r\n");
+#endif
     g_ui_mode = UI_MODE_MAIN;
     Ui_DrawMainScreen();
     Ui_DrawStatus();
@@ -1003,7 +1031,7 @@ void MotorUi_Init(void)
   else
   {
     Touch_LoadDefaultCalibration();
-    printf("[CAL] use defaults\r\n");
+#if ENABLE_TOUCH_CALIBRATION
     g_ui_mode = UI_MODE_CALIBRATION;
     g_cal_index = 0U;
     g_cal_wait_release = 0U;
@@ -1011,11 +1039,17 @@ void MotorUi_Init(void)
     LCD_FillScreen(C_BG);
     LCD_DrawText(10U, 8U, "NO CAL IN FLASH", C_FG, C_BG);
     LCD_DrawText(10U, 24U, "RELEASE THEN CAL", C_FG, C_BG);
+#else
+    g_ui_mode = UI_MODE_MAIN;
+    Ui_DrawMainScreen();
+    Ui_DrawStatus();
+#endif
   }
 }
 
 void MotorUi_Update(uint32_t now)
 {
+#if ENABLE_TOUCH_CALIBRATION
   if (g_ui_mode == UI_MODE_CAL_DONE)
   {
     if ((now - g_mode_tick) >= 1200U)
@@ -1026,7 +1060,9 @@ void MotorUi_Update(uint32_t now)
     }
     return;
   }
+#endif
 
+#if ENABLE_TOUCH_CALIBRATION
   if (g_ui_mode == UI_MODE_CAL_CONFIRM)
   {
     Ui_HandleConfirmTouch(now);
@@ -1038,6 +1074,7 @@ void MotorUi_Update(uint32_t now)
     Ui_HandleCalibration(now);
     return;
   }
+#endif
 
   if (g_ui_mode == UI_MODE_SET)
   {

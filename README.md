@@ -113,6 +113,8 @@ Core/Src/freertos.c              ControlTask, FeedbackTask, UITask, MonitorTask
 
 仅编译通过不能证明电机控制可用。FOC 零点、方向、PID 参数、温升、电源限流和异常行为必须上板验证。
 
+STM32F103C8T6 按 64KB Flash 目标处理。为了让 Debug 构建也适配该容量，工程默认使用 size optimization，并通过宏关闭启动串口日志和触摸屏重新校准流程；正常 LCD/touch 控制与 FOC zero `FCAL` 入口仍保留。
+
 ### Safety Notes / 安全说明
 
 - 上电前确认三相驱动、电机、电源、AS5600 供电和共地连接正确。
@@ -187,6 +189,8 @@ Still planned / not implemented:
 ### Build and Flash
 
 Open the STM32CubeIDE project under `examples/stm32f103c8t6_as5600_adc_i2c_compare`, connect the target board and ST-Link, build, flash, and validate on real hardware. Motor behavior, FOC angle direction, q-axis sign, zero alignment, speed-loop tuning, and position-loop tuning cannot be verified by compilation alone. FOC modes require explicit `FCAL` zero calibration from the SET page before start; startup does not silently capture the present sensor angle as a valid FOC zero.
+
+The STM32F103C8T6 target is treated as a 64KB Flash device. To keep Debug builds within that limit, the project defaults to size optimization and compiles out optional boot UART logs and the touch-screen recalibration workflow. Normal LCD/touch controls and the FOC zero `FCAL` entry remain available.
 
 ### Notes
 
