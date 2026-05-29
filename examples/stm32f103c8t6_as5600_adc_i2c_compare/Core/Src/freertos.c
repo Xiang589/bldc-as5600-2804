@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "comm_task.h"
 #include "motor_control.h"
 #include "motor_control_config.h"
 #include "motor_feedback.h"
@@ -87,6 +88,13 @@ const osThreadAttr_t FeedbackTask_attributes = {
   .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
+/* Definitions for CommTask */
+osThreadId_t CommTaskHandle;
+const osThreadAttr_t CommTask_attributes = {
+  .name = "CommTask",
+  .stack_size = 384 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -100,6 +108,7 @@ void StartControlTask(void *argument);
 void StartUiTask(void *argument);
 void StartMonitorTask(void *argument);
 void StartFeedbackTask(void *argument);
+void StartCommTask(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -142,11 +151,15 @@ void MX_FREERTOS_Init(void) {
   /* creation of FeedbackTask */
   FeedbackTaskHandle = osThreadNew(StartFeedbackTask, NULL, &FeedbackTask_attributes);
 
+  /* creation of CommTask */
+  CommTaskHandle = osThreadNew(StartCommTask, NULL, &CommTask_attributes);
+
   /* USER CODE BEGIN RTOS_THREADS */
   if ((ControlTaskHandle == NULL) ||
       (FeedbackTaskHandle == NULL) ||
       (UITaskHandle == NULL) ||
-      (MonitorTaskHandle == NULL))
+      (MonitorTaskHandle == NULL) ||
+      (CommTaskHandle == NULL))
   {
     Error_Handler();
   }
@@ -247,6 +260,21 @@ void StartFeedbackTask(void *argument)
     (void)osDelayUntil(wake_tick);
   }
   /* USER CODE END StartFeedbackTask */
+}
+
+/* USER CODE BEGIN Header_StartCommTask */
+/**
+* @brief Function implementing the CommTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartCommTask */
+void StartCommTask(void *argument)
+{
+  /* USER CODE BEGIN StartCommTask */
+  (void)argument;
+  CommTask_Run();
+  /* USER CODE END StartCommTask */
 }
 
 /* Private application code --------------------------------------------------*/
