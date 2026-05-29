@@ -9,6 +9,7 @@ The firmware uses USART2 at `115200 8N1`. RX and TX use DMA. UART callbacks only
 - Power-up state is `disabled`, `IDLE`, `target=0`.
 - `ENABLE 1` only arms command acceptance. It does not start the motor by itself.
 - `VEL`, `POS`, `VOLT`, and `TARGET` return `ERR DISABLED` before `ENABLE 1`.
+- `LIMIT`, `VEL`, `POS`, `VOLT`, and `TARGET` reject out-of-range values with `ERR RANGE`; they are not silently clamped.
 - `CommTask` never touches PWM/TIM directly. It calls `motor_command`, which calls the public `motor_control` API.
 - If the motor is enabled and no control command or `KEEPALIVE` is received for 1000 ms, the firmware stops/disables the motor and sends one `EVT COMM_TIMEOUT`.
 - `ZERO` only runs the existing software FOC zero calibration. It never writes AS5600 OTP/BURN registers.
@@ -30,6 +31,12 @@ Responses:
 OK <CMD> ...
 ERR <code> <message>
 EVT <event> ...
+```
+
+Startup/state failures may include numeric motor-control diagnostics:
+
+```text
+ERR STATE invalid state sr=<stop_reason> fault=<fault>
 ```
 
 ## Units
@@ -58,7 +65,7 @@ EVT <event> ...
 | `ENABLE <0\|1>` | Disable or arm command acceptance. `ENABLE 1` does not start output. |
 | `MODE <IDLE\|OPEN\|VEL\|POS>` | Select logical command mode. `POS` target is initialized to current position. |
 | `TARGET <float>` | Apply target for current logical mode. In `OPEN`, the target is treated as an open-loop voltage command. |
-| `VOLT <float>` | Apply voltage-mode FOC command in volts. |
+| `VOLT <float>` | Apply FOC voltage-mode `Uq` command in volts. Use `MODE OPEN` + `TARGET` for open-loop voltage-style output. |
 | `VEL <float>` | Apply FOC velocity target in rad/s. |
 | `POS <float>` | Apply FOC position target in rad. |
 | `LIMIT <voltage_limit> <velocity_limit>` | Set command-layer voltage and velocity limits. |
@@ -108,6 +115,6 @@ python tools/motor_comm_cli.py --port COM5 interactive
 - `comm_uart_dma`: circular RX DMA polling, non-blocking TX DMA, TX busy state.
 - `comm_task`: line assembly, command execution, stream status, watchdog.
 - `comm_protocol`: HAL/RTOS-independent parser.
-- `motor_command`: safety wrapper around `motor_control`.
+- `motor_command`: safety wrapper around `motor_control`; command-driven state changes use short FreeRTOS critical sections, while FOC zero calibration suspends task switches because it intentionally waits for rotor settling.
 
 The FOC voltage/speed/position paths remain experimental. This protocol does not make FOC, PID tuning, current loop, torque loop, or production safety complete.

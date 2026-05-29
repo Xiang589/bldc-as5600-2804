@@ -16,6 +16,7 @@ typedef enum {
   MOTOR_COMMAND_ERR_DISABLED,
   MOTOR_COMMAND_ERR_ESTOP,
   MOTOR_COMMAND_ERR_UNSUPPORTED,
+  MOTOR_COMMAND_ERR_RANGE,
   MOTOR_COMMAND_ERR_STATE
 } MotorCommandResult_t;
 
@@ -54,6 +55,8 @@ MotorCommandResult_t MotorCommand_ClearOrCalibrateZero(void);
 void MotorCommand_HandleCommTimeout(void);
 void MotorCommand_GetStatus(MotorCommandStatus_t *status);
 uint8_t MotorCommand_IsEnabled(void);
+MotorStopReason_t MotorCommand_GetLastErrorStopReason(void);
+MotorFault_t MotorCommand_GetLastErrorFault(void);
 const char *MotorCommand_ResultCode(MotorCommandResult_t result);
 const char *MotorCommand_ResultMessage(MotorCommandResult_t result);
 

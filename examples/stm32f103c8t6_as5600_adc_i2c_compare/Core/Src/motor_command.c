@@ -1,7 +1,9 @@
 #include "motor_command.h"
 
+#include "FreeRTOS.h"
 #include "motor_control_config.h"
 #include "motor_feedback.h"
+#include "task.h"
 
 #define MOTOR_COMMAND_DEFAULT_VOLTAGE_LIMIT_MV MOTOR_FOC_VOLTAGE_LIMIT_MV
 #define MOTOR_COMMAND_MAX_VOLTAGE_LIMIT_MV     MOTOR_FOC_VOLTAGE_LIMIT_MV
@@ -9,6 +11,7 @@
 #define MOTOR_COMMAND_MAX_VELOCITY_LIMIT_MRAD_S     12566
 #define MOTOR_COMMAND_PI_MILLI 3142
 #define MOTOR_COMMAND_TWO_PI_MILLI 6283
+#define MOTOR_COMMAND_POSITION_LIMIT_MRAD MOTOR_COMMAND_TWO_PI_MILLI
 
 static uint8_t g_enabled = 0U;
 static uint8_t g_estop_latched = 0U;
@@ -16,6 +19,8 @@ static CommProtocolMode_t g_mode = COMM_MODE_IDLE;
 static int32_t g_target_milli = 0;
 static int32_t g_voltage_limit_mv = MOTOR_COMMAND_DEFAULT_VOLTAGE_LIMIT_MV;
 static int32_t g_velocity_limit_mrad_s = MOTOR_COMMAND_DEFAULT_VELOCITY_LIMIT_MRAD_S;
+static MotorStopReason_t g_last_error_stop_reason = MOTOR_STOP_REASON_NONE;
+static MotorFault_t g_last_error_fault = MOTOR_FAULT_NONE;
 
 static MotorCommandResult_t MotorCommand_ApplyVoltageMv(int32_t voltage_mv,
                                                         uint8_t use_foc_voltage);
@@ -25,11 +30,9 @@ static int32_t MotorCommand_AbsI32(int32_t value)
   return (value < 0) ? -value : value;
 }
 
-static int32_t MotorCommand_ClampI32(int32_t value, int32_t min_value, int32_t max_value)
+static uint8_t MotorCommand_IsWithinSignedLimit(int32_t value, int32_t limit)
 {
-  if (value < min_value) return min_value;
-  if (value > max_value) return max_value;
-  return value;
+  return ((value >= -limit) && (value <= limit)) ? 1U : 0U;
 }
 
 static int32_t MotorCommand_MradS_ToRpmX10(int32_t velocity_mrad_s)
@@ -64,6 +67,31 @@ static int32_t MotorCommand_DegX100_ToMrad(int32_t angle_x100)
 static void MotorCommand_SetDirectionForSignedValue(int32_t value)
 {
   MotorControl_SetDirection((value < 0) ? MOTOR_DIR_REV : MOTOR_DIR_FWD);
+}
+
+static void MotorCommand_ClearLastStateError(void)
+{
+  g_last_error_stop_reason = MOTOR_STOP_REASON_NONE;
+  g_last_error_fault = MOTOR_FAULT_NONE;
+}
+
+static MotorCommandResult_t MotorCommand_RecordStateError(void)
+{
+  g_last_error_stop_reason = MotorControl_GetStopReason();
+  g_last_error_fault = MotorControl_GetFault();
+  return MOTOR_COMMAND_ERR_STATE;
+}
+
+static MotorCommandResult_t MotorCommand_StartAndVerify(void)
+{
+  MotorControl_Start();
+  if (MotorControl_IsRunning() == 0U)
+  {
+    return MotorCommand_RecordStateError();
+  }
+
+  MotorCommand_ClearLastStateError();
+  return MOTOR_COMMAND_OK;
 }
 
 static void MotorCommand_ApplyControlMode(CommProtocolMode_t mode)
@@ -101,42 +129,57 @@ static MotorCommandResult_t MotorCommand_CheckCanOutput(void)
 
 void MotorCommand_Init(void)
 {
+  taskENTER_CRITICAL();
   g_enabled = 0U;
   g_estop_latched = 0U;
   g_mode = COMM_MODE_IDLE;
   g_target_milli = 0;
   g_voltage_limit_mv = MOTOR_COMMAND_DEFAULT_VOLTAGE_LIMIT_MV;
   g_velocity_limit_mrad_s = MOTOR_COMMAND_DEFAULT_VELOCITY_LIMIT_MRAD_S;
+  MotorCommand_ClearLastStateError();
   MotorControl_Stop();
+  taskEXIT_CRITICAL();
 }
 
 MotorCommandResult_t MotorCommand_SetEnable(uint8_t enabled)
 {
+  MotorCommandResult_t result = MOTOR_COMMAND_OK;
+
+  taskENTER_CRITICAL();
   if (enabled == 0U)
   {
     g_enabled = 0U;
     g_target_milli = 0;
     MotorControl_Stop();
+    MotorCommand_ClearLastStateError();
+    taskEXIT_CRITICAL();
     return MOTOR_COMMAND_OK;
   }
 
   if (MotorControl_GetFault() != MOTOR_FAULT_NONE)
   {
-    return MOTOR_COMMAND_ERR_STATE;
+    result = MotorCommand_RecordStateError();
+    taskEXIT_CRITICAL();
+    return result;
   }
 
   g_enabled = 1U;
   g_estop_latched = 0U;
+  MotorCommand_ClearLastStateError();
+  taskEXIT_CRITICAL();
   return MOTOR_COMMAND_OK;
 }
 
 MotorCommandResult_t MotorCommand_SetMode(CommProtocolMode_t mode)
 {
+  taskENTER_CRITICAL();
   g_mode = mode;
   if (mode == COMM_MODE_IDLE)
   {
     g_target_milli = 0;
     MotorControl_Stop();
+    MotorCommand_ClearLastStateError();
+    taskEXIT_CRITICAL();
     return MOTOR_COMMAND_OK;
   }
 
@@ -156,12 +199,20 @@ MotorCommandResult_t MotorCommand_SetMode(CommProtocolMode_t mode)
     }
   }
 
+  MotorCommand_ClearLastStateError();
+  taskEXIT_CRITICAL();
   return MOTOR_COMMAND_OK;
 }
 
 MotorCommandResult_t MotorCommand_SetTargetMilli(int32_t target_milli)
 {
-  switch (g_mode)
+  CommProtocolMode_t mode;
+
+  taskENTER_CRITICAL();
+  mode = g_mode;
+  taskEXIT_CRITICAL();
+
+  switch (mode)
   {
     case COMM_MODE_OPEN:
       return MotorCommand_ApplyVoltageMv(target_milli, 0U);
@@ -180,33 +231,42 @@ static MotorCommandResult_t MotorCommand_ApplyVoltageMv(int32_t voltage_mv,
 {
   int32_t limited_mv;
   float duty;
-  MotorCommandResult_t check = MotorCommand_CheckCanOutput();
+  MotorCommandResult_t check;
 
+  taskENTER_CRITICAL();
+  check = MotorCommand_CheckCanOutput();
   if (check != MOTOR_COMMAND_OK)
   {
+    taskEXIT_CRITICAL();
     return check;
   }
 
-  limited_mv = MotorCommand_ClampI32(voltage_mv,
-                                     -g_voltage_limit_mv,
-                                     g_voltage_limit_mv);
-  g_mode = COMM_MODE_OPEN;
-  g_target_milli = limited_mv;
+  if (MotorCommand_IsWithinSignedLimit(voltage_mv, g_voltage_limit_mv) == 0U)
+  {
+    taskEXIT_CRITICAL();
+    return MOTOR_COMMAND_ERR_RANGE;
+  }
 
-  if (limited_mv == 0)
+  g_mode = COMM_MODE_OPEN;
+  g_target_milli = voltage_mv;
+
+  if (voltage_mv == 0)
   {
     MotorControl_Stop();
+    MotorCommand_ClearLastStateError();
+    taskEXIT_CRITICAL();
     return MOTOR_COMMAND_OK;
   }
 
-  MotorCommand_SetDirectionForSignedValue(limited_mv);
-  limited_mv = MotorCommand_AbsI32(limited_mv);
+  MotorCommand_SetDirectionForSignedValue(voltage_mv);
+  limited_mv = MotorCommand_AbsI32(voltage_mv);
   duty = ((float)limited_mv * 100.0f) / (33.0f * (float)MOTOR_FOC_SUPPLY_MV);
   MotorControl_SetDuty(duty);
   MotorControl_SetMode((use_foc_voltage != 0U) ? MOTOR_MODE_FOC_VOLTAGE
                                                 : MOTOR_MODE_OPEN_LOOP);
-  MotorControl_Start();
-  return MOTOR_COMMAND_OK;
+  check = MotorCommand_StartAndVerify();
+  taskEXIT_CRITICAL();
+  return check;
 }
 
 MotorCommandResult_t MotorCommand_SetVoltageMv(int32_t voltage_mv)
@@ -218,22 +278,31 @@ MotorCommandResult_t MotorCommand_SetVelocityMradS(int32_t velocity_mrad_s)
 {
   int32_t limited_velocity;
   int32_t target_rpm_x10;
-  MotorCommandResult_t check = MotorCommand_CheckCanOutput();
+  MotorCommandResult_t check;
 
+  taskENTER_CRITICAL();
+  check = MotorCommand_CheckCanOutput();
   if (check != MOTOR_COMMAND_OK)
   {
+    taskEXIT_CRITICAL();
     return check;
   }
 
-  limited_velocity = MotorCommand_ClampI32(velocity_mrad_s,
-                                           -g_velocity_limit_mrad_s,
-                                           g_velocity_limit_mrad_s);
+  if (MotorCommand_IsWithinSignedLimit(velocity_mrad_s, g_velocity_limit_mrad_s) == 0U)
+  {
+    taskEXIT_CRITICAL();
+    return MOTOR_COMMAND_ERR_RANGE;
+  }
+
+  limited_velocity = velocity_mrad_s;
   g_mode = COMM_MODE_VEL;
   g_target_milli = limited_velocity;
 
   if (limited_velocity == 0)
   {
     MotorControl_Stop();
+    MotorCommand_ClearLastStateError();
+    taskEXIT_CRITICAL();
     return MOTOR_COMMAND_OK;
   }
 
@@ -241,26 +310,36 @@ MotorCommandResult_t MotorCommand_SetVelocityMradS(int32_t velocity_mrad_s)
   target_rpm_x10 = MotorCommand_MradS_ToRpmX10(MotorCommand_AbsI32(limited_velocity));
   MotorControl_SetTargetRpmX10(target_rpm_x10);
   MotorControl_SetMode(MOTOR_MODE_FOC_VELOCITY);
-  MotorControl_Start();
-  return MOTOR_COMMAND_OK;
+  check = MotorCommand_StartAndVerify();
+  taskEXIT_CRITICAL();
+  return check;
 }
 
 MotorCommandResult_t MotorCommand_SetPositionMrad(int32_t position_mrad)
 {
-  MotorCommandResult_t check = MotorCommand_CheckCanOutput();
-  int32_t limited_position = MotorCommand_ClampI32(position_mrad, -6283, 6283);
+  MotorCommandResult_t check;
 
+  taskENTER_CRITICAL();
+  check = MotorCommand_CheckCanOutput();
   if (check != MOTOR_COMMAND_OK)
   {
+    taskEXIT_CRITICAL();
     return check;
   }
 
+  if (MotorCommand_IsWithinSignedLimit(position_mrad, MOTOR_COMMAND_POSITION_LIMIT_MRAD) == 0U)
+  {
+    taskEXIT_CRITICAL();
+    return MOTOR_COMMAND_ERR_RANGE;
+  }
+
   g_mode = COMM_MODE_POS;
-  g_target_milli = limited_position;
-  MotorControl_SetTargetPositionDegX10(MotorCommand_Mrad_ToDegX10(limited_position));
+  g_target_milli = position_mrad;
+  MotorControl_SetTargetPositionDegX10(MotorCommand_Mrad_ToDegX10(position_mrad));
   MotorControl_SetMode(MOTOR_MODE_FOC_POSITION);
-  MotorControl_Start();
-  return MOTOR_COMMAND_OK;
+  check = MotorCommand_StartAndVerify();
+  taskEXIT_CRITICAL();
+  return check;
 }
 
 MotorCommandResult_t MotorCommand_SetLimits(int32_t voltage_limit_mv,
@@ -271,46 +350,72 @@ MotorCommandResult_t MotorCommand_SetLimits(int32_t voltage_limit_mv,
     return MOTOR_COMMAND_ERR_ARG;
   }
 
-  g_voltage_limit_mv = MotorCommand_ClampI32(voltage_limit_mv,
-                                             0,
-                                             MOTOR_COMMAND_MAX_VOLTAGE_LIMIT_MV);
-  g_velocity_limit_mrad_s = MotorCommand_ClampI32(velocity_limit_mrad_s,
-                                                  0,
-                                                  MOTOR_COMMAND_MAX_VELOCITY_LIMIT_MRAD_S);
+  if ((voltage_limit_mv > MOTOR_COMMAND_MAX_VOLTAGE_LIMIT_MV) ||
+      (velocity_limit_mrad_s > MOTOR_COMMAND_MAX_VELOCITY_LIMIT_MRAD_S))
+  {
+    return MOTOR_COMMAND_ERR_RANGE;
+  }
+
+  taskENTER_CRITICAL();
+  g_voltage_limit_mv = voltage_limit_mv;
+  g_velocity_limit_mrad_s = velocity_limit_mrad_s;
+  MotorCommand_ClearLastStateError();
+  taskEXIT_CRITICAL();
   return MOTOR_COMMAND_OK;
 }
 
 MotorCommandResult_t MotorCommand_Stop(void)
 {
+  taskENTER_CRITICAL();
   g_enabled = 0U;
   g_target_milli = 0;
   MotorControl_Stop();
+  MotorCommand_ClearLastStateError();
+  taskEXIT_CRITICAL();
   return MOTOR_COMMAND_OK;
 }
 
 MotorCommandResult_t MotorCommand_EStop(void)
 {
+  taskENTER_CRITICAL();
   g_enabled = 0U;
   g_estop_latched = 1U;
   g_target_milli = 0;
   MotorControl_Stop();
+  MotorCommand_ClearLastStateError();
+  taskEXIT_CRITICAL();
   return MOTOR_COMMAND_OK;
 }
 
 MotorCommandResult_t MotorCommand_ClearOrCalibrateZero(void)
 {
-  if (MotorControl_CalibrateFocZero() == 0U)
+  uint8_t calibrated;
+
+  /*
+   * FOC zero calibration deliberately waits for rotor settling, so it cannot
+   * run inside a hard critical section. Suspending task switches keeps the
+   * ControlTask/UI from touching motor_control while TIM2 HAL tick continues.
+   */
+  vTaskSuspendAll();
+  calibrated = MotorControl_CalibrateFocZero();
+  (void)xTaskResumeAll();
+
+  if (calibrated == 0U)
   {
-    return MOTOR_COMMAND_ERR_STATE;
+    return MotorCommand_RecordStateError();
   }
+  MotorCommand_ClearLastStateError();
   return MOTOR_COMMAND_OK;
 }
 
 void MotorCommand_HandleCommTimeout(void)
 {
+  taskENTER_CRITICAL();
   g_enabled = 0U;
   g_target_milli = 0;
   MotorControl_Stop();
+  MotorCommand_ClearLastStateError();
+  taskEXIT_CRITICAL();
 }
 
 void MotorCommand_GetStatus(MotorCommandStatus_t *status)
@@ -323,6 +428,7 @@ void MotorCommand_GetStatus(MotorCommandStatus_t *status)
   }
 
   MotorFeedback_GetSnapshot(&feedback);
+  taskENTER_CRITICAL();
   status->enabled = g_enabled;
   status->estop_latched = g_estop_latched;
   status->mode = g_mode;
@@ -344,11 +450,37 @@ void MotorCommand_GetStatus(MotorCommandStatus_t *status)
   status->magnet_too_weak = feedback.magnet_too_weak;
   status->magnet_too_strong = feedback.magnet_too_strong;
   status->foc_uq_mv = MotorControl_GetFocUqMv();
+  taskEXIT_CRITICAL();
 }
 
 uint8_t MotorCommand_IsEnabled(void)
 {
-  return g_enabled;
+  uint8_t enabled;
+
+  taskENTER_CRITICAL();
+  enabled = g_enabled;
+  taskEXIT_CRITICAL();
+  return enabled;
+}
+
+MotorStopReason_t MotorCommand_GetLastErrorStopReason(void)
+{
+  MotorStopReason_t reason;
+
+  taskENTER_CRITICAL();
+  reason = g_last_error_stop_reason;
+  taskEXIT_CRITICAL();
+  return reason;
+}
+
+MotorFault_t MotorCommand_GetLastErrorFault(void)
+{
+  MotorFault_t fault;
+
+  taskENTER_CRITICAL();
+  fault = g_last_error_fault;
+  taskEXIT_CRITICAL();
+  return fault;
 }
 
 const char *MotorCommand_ResultCode(MotorCommandResult_t result)
@@ -359,6 +491,7 @@ const char *MotorCommand_ResultCode(MotorCommandResult_t result)
     case MOTOR_COMMAND_ERR_DISABLED: return "DISABLED";
     case MOTOR_COMMAND_ERR_ESTOP: return "ESTOP";
     case MOTOR_COMMAND_ERR_UNSUPPORTED: return "UNSUPPORTED";
+    case MOTOR_COMMAND_ERR_RANGE: return "RANGE";
     case MOTOR_COMMAND_ERR_STATE: return "STATE";
     case MOTOR_COMMAND_OK:
     default:
@@ -374,6 +507,7 @@ const char *MotorCommand_ResultMessage(MotorCommandResult_t result)
     case MOTOR_COMMAND_ERR_DISABLED: return "motor disabled";
     case MOTOR_COMMAND_ERR_ESTOP: return "estop latched";
     case MOTOR_COMMAND_ERR_UNSUPPORTED: return "unsupported";
+    case MOTOR_COMMAND_ERR_RANGE: return "out of range";
     case MOTOR_COMMAND_ERR_STATE: return "invalid state";
     case MOTOR_COMMAND_OK:
     default:

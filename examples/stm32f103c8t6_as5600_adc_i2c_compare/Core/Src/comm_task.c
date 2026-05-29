@@ -11,6 +11,7 @@
 #define COMM_TASK_POLL_MS 2U
 #define COMM_TASK_WATCHDOG_MS 1000U
 #define COMM_TASK_TX_RETRY_DELAY_MS 1U
+#define COMM_TASK_TX_RELIABLE_TIMEOUT_MS 100U
 #define COMM_TASK_STREAM_MIN_MS 20
 #define COMM_TASK_STREAM_MAX_MS 5000
 
@@ -104,11 +105,23 @@ static void CommTask_FinishLine(char *line, size_t line_size, size_t *pos)
   CommTask_AppendStr(line, line_size, pos, "\r\n");
 }
 
-static void CommTask_SendReliable(const char *text)
+static uint8_t CommTask_SendReliable(const char *text)
 {
   size_t len = strlen(text);
-  while (CommUartDma_Transmit(text, len) == 0U)
+  uint32_t start_tick = HAL_GetTick();
+
+  for (;;)
   {
+    if (CommUartDma_Transmit(text, len) != 0U)
+    {
+      return 1U;
+    }
+
+    if ((HAL_GetTick() - start_tick) >= COMM_TASK_TX_RELIABLE_TIMEOUT_MS)
+    {
+      return 0U;
+    }
+
     osDelay(COMM_TASK_TX_RETRY_DELAY_MS);
   }
 }
@@ -134,15 +147,28 @@ static void CommTask_SendError(const char *code, const char *message)
 static void CommTask_SendMotorResult(CommCommandType_t type, MotorCommandResult_t result)
 {
   char line[96];
+  size_t pos = 0U;
 
   if (result != MOTOR_COMMAND_OK)
   {
+    if (result == MOTOR_COMMAND_ERR_STATE)
+    {
+      CommTask_AppendStr(line, sizeof(line), &pos, "ERR STATE ");
+      CommTask_AppendStr(line, sizeof(line), &pos, MotorCommand_ResultMessage(result));
+      CommTask_AppendFieldU32(line, sizeof(line), &pos, "sr",
+                              (uint32_t)MotorCommand_GetLastErrorStopReason());
+      CommTask_AppendFieldU32(line, sizeof(line), &pos, "fault",
+                              (uint32_t)MotorCommand_GetLastErrorFault());
+      CommTask_FinishLine(line, sizeof(line), &pos);
+      CommTask_SendReliable(line);
+      return;
+    }
+
     CommTask_SendError(MotorCommand_ResultCode(result),
                        MotorCommand_ResultMessage(result));
     return;
   }
 
-  size_t pos = 0U;
   CommTask_AppendStr(line, sizeof(line), &pos, "OK ");
   CommTask_AppendStr(line, sizeof(line), &pos, CommProtocol_CommandName(type));
   CommTask_FinishLine(line, sizeof(line), &pos);
@@ -211,7 +237,7 @@ static MotorCommandResult_t CommTask_ExecuteCommand(const CommProtocolCommand_t 
       CommTask_SendReliable("OK PING\r\n");
       break;
     case COMM_CMD_HELP:
-      CommTask_SendReliable("OK HELP PING HELP ID? STATUS? ENABLE MODE TARGET VOLT VEL POS LIMIT PIDV PIDP STREAM STOP ESTOP ZERO KEEPALIVE\r\n");
+      CommTask_SendReliable("OK HELP PING HELP ID? STATUS? ENABLE MODE TARGET VOLT VEL POS LIMIT PIDV PIDP STREAM STOP ESTOP ZERO KEEPALIVE VOLT=FOC_UQ RANGE=ERR_RANGE\r\n");
       break;
     case COMM_CMD_ID:
       CommTask_SendReliable("OK ID stm32-as5600-bldc 0.1\r\n");

@@ -227,6 +227,8 @@ This branch adds an USART2 `115200 8N1` ASCII line protocol for PC-side motor co
 - Power-up state is `disabled`, `IDLE`, `target=0`.
 - `ENABLE 1` arms command acceptance but does not start output by itself.
 - `VEL` uses rad/s, `POS` uses rad, and `VOLT` uses volts.
+- `VOLT` is the FOC voltage-mode `Uq` command; use `MODE OPEN` + `TARGET` for open-loop voltage-style output.
+- Out-of-range `LIMIT` / `VEL` / `POS` / `VOLT` / `TARGET` inputs return `ERR RANGE` instead of being silently clamped.
 - `STATUS?` reports enable/mode/target/angle/velocity/raw/magnet flags/limits.
 - If no control command or `KEEPALIVE` is received for 1000 ms while enabled, firmware stops/disables the motor and sends one `EVT COMM_TIMEOUT`.
 - `ZERO` only runs the existing software FOC zero calibration; it never writes AS5600 OTP/BURN.
