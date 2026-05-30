@@ -21,6 +21,7 @@ DEFAULT_REFRESH_MS = "500"
 READ_TIMEOUT_S = 0.1
 WRITE_TIMEOUT_S = 0.5
 QUEUE_POLL_MS = 50
+KEEPALIVE_INTERVAL_S = 0.4
 
 STATUS_FIELDS = (
     "en",
@@ -132,6 +133,8 @@ class MotorCommGui:
 
         self.control_buttons: list[tk.Widget] = []
         self.status_due = time.monotonic()
+        self.keepalive_due = time.monotonic()
+        self.last_en_state = "0"
 
         self._build_ui()
         self._set_connected_ui(False)
@@ -314,11 +317,20 @@ class MotorCommGui:
         self.log(f"Connected to {port} at {baud}")
         self.send_command("PING")
         self.send_command("STATUS?")
-        self.status_due = time.monotonic() + self._refresh_interval_s()
+        now = time.monotonic()
+        self.status_due = now + self._refresh_interval_s()
+        self.keepalive_due = now + KEEPALIVE_INTERVAL_S
 
     def disconnect(self) -> None:
+        if self.session.is_connected():
+            try:
+                self.session.send_line("STOP")
+                self.log("TX: STOP")
+            except Exception as exc:
+                self.log(f"ERR: stop before disconnect failed: {exc}")
         self.session.disconnect()
         self._set_connected_ui(False)
+        self.last_en_state = "0"
         self.log("Disconnected")
 
     def confirm_zero(self) -> None:
@@ -366,7 +378,7 @@ class MotorCommGui:
         self.send_command(command)
         self.manual_var.set("")
 
-    def send_command(self, command: str) -> bool:
+    def send_command(self, command: str, log_tx: bool = True) -> bool:
         if not self.session.is_connected():
             self.log("ERR: serial port is not connected")
             return False
@@ -377,7 +389,8 @@ class MotorCommGui:
             self.session.disconnect()
             self._set_connected_ui(False)
             return False
-        self.log(f"TX: {command}")
+        if log_tx:
+            self.log(f"TX: {command}")
         return True
 
     def _parse_float(self, text: str, name: str) -> float | None:
@@ -400,9 +413,13 @@ class MotorCommGui:
 
     def _poll_gui(self) -> None:
         self._process_rx_queue()
-        if self.session.is_connected() and time.monotonic() >= self.status_due:
+        now = time.monotonic()
+        if self.session.is_connected() and now >= self.status_due:
             self.send_command("STATUS?")
-            self.status_due = time.monotonic() + self._refresh_interval_s()
+            self.status_due = now + self._refresh_interval_s()
+        if self.session.is_connected() and self.last_en_state == "1" and now >= self.keepalive_due:
+            self.send_command("KEEPALIVE", log_tx=False)
+            self.keepalive_due = now + KEEPALIVE_INTERVAL_S
         self.root.after(QUEUE_POLL_MS, self._poll_gui)
 
     def _process_rx_queue(self) -> None:
@@ -443,6 +460,10 @@ class MotorCommGui:
     def _update_status(self, fields: dict[str, str]) -> None:
         for name in STATUS_FIELDS:
             self.status_vars[name].set(fields.get(name, "--"))
+        if "en" in fields:
+            self.last_en_state = fields["en"]
+            if self.last_en_state != "1":
+                self.keepalive_due = time.monotonic() + KEEPALIVE_INTERVAL_S
         self._update_magnet_status(fields)
 
     def _update_magnet_status(self, fields: dict[str, str]) -> None:
