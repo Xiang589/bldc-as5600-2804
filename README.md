@@ -236,6 +236,12 @@ This branch adds an USART2 `115200 8N1` ASCII line protocol for PC-side motor co
 
 Protocol details are documented in `docs/COMM_PROTOCOL.md`.
 
+Python tools require `pyserial`:
+
+```bash
+python -m pip install pyserial
+```
+
 Python CLI examples:
 
 ```bash
@@ -245,6 +251,15 @@ python tools/motor_comm_cli.py --port COM5 enable
 python tools/motor_comm_cli.py --port COM5 vel 5
 python tools/motor_comm_cli.py --port COM5 stop
 ```
+
+Python GUI:
+
+```bash
+python tools/motor_comm_gui.py
+```
+
+The GUI is a lightweight Tkinter debug tool for bring-up and testing. It is not
+a production-grade host controller.
 
 ### Notes
 

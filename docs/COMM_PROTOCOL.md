@@ -101,6 +101,7 @@ OK STOP
 The helper script only depends on `pyserial`:
 
 ```bash
+python -m pip install pyserial
 python tools/motor_comm_cli.py --port COM5 ping
 python tools/motor_comm_cli.py --port COM5 status
 python tools/motor_comm_cli.py --port COM5 enable
@@ -109,6 +110,21 @@ python tools/motor_comm_cli.py --port COM5 stop
 python tools/motor_comm_cli.py --port COM5 stream 100
 python tools/motor_comm_cli.py --port COM5 interactive
 ```
+
+## Python GUI
+
+The lightweight Tkinter GUI uses the same ASCII protocol and the same `pyserial`
+dependency. It polls `STATUS?` periodically instead of enabling `STREAM`, so
+manual command responses remain easier to read.
+
+```bash
+python -m pip install pyserial
+python tools/motor_comm_gui.py
+```
+
+The GUI is a debug and bring-up tool. It validates basic input ranges and sends
+`STOP` when the window closes, but the firmware remains responsible for final
+safety checks and limits.
 
 ## Implementation Boundaries
 
