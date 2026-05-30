@@ -54,5 +54,9 @@ dkms.conf
 # debug information files
 *.dwo
 
+# Python helper script cache
+__pycache__/
+*.py[cod]
+
 # STM32CubeIDE local workspace/project preferences
 examples/stm32f103c8t6_as5600_adc_i2c_compare/.settings/stm32cubeide.project.prefs

@@ -115,6 +115,34 @@ Core/Src/freertos.c              ControlTask, FeedbackTask, UITask, MonitorTask
 
 STM32F103C8T6 按 64KB Flash 目标处理。为了让 Debug 构建也适配该容量，工程默认使用 size optimization，并通过宏关闭启动串口日志和触摸屏重新校准流程；正常 LCD/touch 控制与 FOC zero `FCAL` 入口仍保留。
 
+### UART Command Protocol / 串口控制协议
+
+当前分支增加了 USART2 `115200 8N1` 的 ASCII 行协议，用于电脑端通过串口安全地下发电机控制命令。RX/TX 使用 DMA；UART 回调只维护 DMA 状态，命令解析和电机控制都在 `CommTask` 中完成。
+
+- 上电默认 `disabled`、`IDLE`、`target=0`。
+- `ENABLE 1` 只允许后续控制命令生效，不会单独启动电机。
+- `VEL` 使用 rad/s，`POS` 使用 rad，`VOLT` 使用 V。
+- `STATUS?` 返回 enable/mode/target/angle/velocity/raw/magnet flags/limits 等状态。
+- 1000ms 内没有控制命令或 `KEEPALIVE` 时，固件会自动 stop/disable 并发送一次 `EVT COMM_TIMEOUT`。
+- `ZERO` 只调用现有软件 FOC 零点校准，不写 AS5600 OTP/BURN。
+- `PIDV` / `PIDP` 运行时调参暂未实现，当前返回 `ERR UNSUPPORTED`。
+
+协议细节见：
+
+```text
+docs/COMM_PROTOCOL.md
+```
+
+Python CLI 示例：
+
+```bash
+python tools/motor_comm_cli.py --port COM5 ping
+python tools/motor_comm_cli.py --port COM5 status
+python tools/motor_comm_cli.py --port COM5 enable
+python tools/motor_comm_cli.py --port COM5 vel 5
+python tools/motor_comm_cli.py --port COM5 stop
+```
+
 ### Safety Notes / 安全说明
 
 - 上电前确认三相驱动、电机、电源、AS5600 供电和共地连接正确。
@@ -191,6 +219,47 @@ Still planned / not implemented:
 Open the STM32CubeIDE project under `examples/stm32f103c8t6_as5600_adc_i2c_compare`, connect the target board and ST-Link, build, flash, and validate on real hardware. Motor behavior, FOC angle direction, q-axis sign, zero alignment, speed-loop tuning, and position-loop tuning cannot be verified by compilation alone. FOC modes require explicit `FCAL` zero calibration from the SET page before start; startup does not silently capture the present sensor angle as a valid FOC zero.
 
 The STM32F103C8T6 target is treated as a 64KB Flash device. To keep Debug builds within that limit, the project defaults to size optimization and compiles out optional boot UART logs and the touch-screen recalibration workflow. Normal LCD/touch controls and the FOC zero `FCAL` entry remain available.
+
+### UART Command Protocol
+
+This branch adds an USART2 `115200 8N1` ASCII line protocol for PC-side motor control. RX/TX use DMA. UART callbacks only maintain DMA state; line assembly, parsing, safety checks, and motor-control dispatch run in `CommTask`.
+
+- Power-up state is `disabled`, `IDLE`, `target=0`.
+- `ENABLE 1` arms command acceptance but does not start output by itself.
+- `VEL` uses rad/s, `POS` uses rad, and `VOLT` uses volts.
+- `VOLT` is the FOC voltage-mode `Uq` command; use `MODE OPEN` + `TARGET` for open-loop voltage-style output.
+- Out-of-range `LIMIT` / `VEL` / `POS` / `VOLT` / `TARGET` inputs return `ERR RANGE` instead of being silently clamped.
+- `STATUS?` reports enable/mode/target/angle/velocity/raw/magnet flags/limits.
+- If no control command or `KEEPALIVE` is received for 1000 ms while enabled, firmware stops/disables the motor and sends one `EVT COMM_TIMEOUT`.
+- `ZERO` only runs the existing software FOC zero calibration; it never writes AS5600 OTP/BURN.
+- Runtime `PIDV` / `PIDP` tuning is not implemented yet and returns `ERR UNSUPPORTED`.
+
+Protocol details are documented in `docs/COMM_PROTOCOL.md`.
+
+Python tools require `pyserial`:
+
+```bash
+python -m pip install pyserial
+```
+
+Python CLI examples:
+
+```bash
+python tools/motor_comm_cli.py --port COM5 ping
+python tools/motor_comm_cli.py --port COM5 status
+python tools/motor_comm_cli.py --port COM5 enable
+python tools/motor_comm_cli.py --port COM5 vel 5
+python tools/motor_comm_cli.py --port COM5 stop
+```
+
+Python GUI:
+
+```bash
+python tools/motor_comm_gui.py
+```
+
+The GUI is a lightweight Tkinter debug tool for bring-up and testing. It is not
+a production-grade host controller.
 
 ### Notes
 
